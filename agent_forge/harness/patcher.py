@@ -42,7 +42,9 @@ def parse_patch_blocks(llm_output: str) -> list[PatchBlock]:
     """Extract all FILE / SEARCH / REPLACE blocks from an LLM completion."""
     blocks: list[PatchBlock] = []
     for match in PATCH_BLOCK_RE.finditer(llm_output):
-        file_path = match.group("file_path").strip()
+        raw_path = match.group("file_path").strip()
+        raw_path = raw_path.replace("(NEW FILE)", "").strip()
+        file_path = raw_path.strip("= `#*'\"\t")
         search_raw = match.group("search")
         replace_raw = match.group("replace")
         if search_raw.endswith("\r\n"):
