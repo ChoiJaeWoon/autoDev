@@ -387,11 +387,21 @@
           (run.pr_draft_markdown && run.pr_draft_markdown.trim()) ||
           "PR 초안이 생성되지 않았습니다.";
         const prLink = el("pr-published-link");
-        if (run.pr_url && run.pr_url.trim()) {
-          prLink.href = run.pr_url;
+        const pubBtn = el("publish-pr-btn");
+        const rawPrUrl = (run.pr_url || "").trim();
+        if (/^https:\/\//i.test(rawPrUrl)) {
+          prLink.href = rawPrUrl;
           prLink.classList.remove("hidden");
+          if (pubBtn) {
+            pubBtn.disabled = true;
+            pubBtn.textContent = "PR Published";
+          }
         } else {
           prLink.classList.add("hidden");
+          if (pubBtn) {
+            pubBtn.disabled = false;
+            pubBtn.textContent = "Publish Draft PR to GitHub";
+          }
         }
       } else {
         prPanel.classList.add("hidden");
@@ -651,6 +661,12 @@
     el("mission-form").addEventListener("submit", submitNewMission);
     el("mission-input").addEventListener("input", (evt) => {
       const val = (evt.target.value || "").toLowerCase();
+      if (!val.trim()) {
+        pendingIssueNumber = null;
+        pendingIssueUrl = "";
+        const badge = el("issue-linked-badge");
+        if (badge) badge.classList.add("hidden");
+      }
       if (val.includes(".jsp") || val.includes(".java") || val.includes("boardservice") || val.includes("게시판")) {
         el("mission-repo").value = "targets/legacy-jsp-app";
       } else if (val.includes("calculator") || val.includes(".py")) {

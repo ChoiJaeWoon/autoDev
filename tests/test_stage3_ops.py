@@ -150,9 +150,9 @@ def test_github_ops_issue_formatting_and_pr_draft_builder(tmp_path: Path):
                 test_passed=True,
                 exit_code=0,
                 artifacts={
-                    "baseline_png": "/tmp/baseline.png",
-                    "after_png": "/tmp/attempt-1-after.png",
-                    "diff_png": "/tmp/attempt-1-diff.png",
+                    "baseline_screenshot": "/tmp/baseline.png",
+                    "after_screenshot": "/tmp/attempt-1-after.png",
+                    "diff_screenshot": "/tmp/attempt-1-diff.png",
                     "diff_ratio": "0.0142",
                 },
             )
@@ -299,3 +299,52 @@ def test_engine_retry_from_checkpoint_skips_plan_and_write_test(tmp_path: Path):
     assert retried_run.attempts[-1].test_passed is True
     assert len(llm.calls) == 4  # Only 1 additional LLM call (IMPLEMENT #2)!
     assert "Closes #21" in retried_run.pr_draft_markdown
+
+
+def test_stage3_review_fixes_slug_validation_and_retry_edge_cases(tmp_path: Path):
+    import pytest
+
+    # 1. Invalid repo_slug or issue_number must raise ValueError
+    with pytest.raises(ValueError):
+        fetch_github_issue("../evil/slug", 1, token="ghp_x")
+    with pytest.raises(ValueError):
+        fetch_github_issue("ChoiJaeWoon/autoDev", 0, token="ghp_x")
+
+    # 2. Retry after user plan rejection (baseline_commit_sha is None, halt_reason == POLICY_VIOLATION)
+    # must re-run from PLAN instead of bypassing plan rejection
+    repo = _setup_calc_repo(tmp_path)
+    store = StateStore(tmp_path / "state.db")
+    verifier = SubprocessTestVerifier([sys.executable, "-m", "pytest", "-q"])
+
+    plan_1 = (
+        '{"subtasks": ["거절될 계획"], '
+        '"target_source_files": ["src/calc.py"], '
+        '"target_test_files": []}'
+    )
+    plan_2 = (
+        '{"subtasks": ["새로운 계획"], '
+        '"target_source_files": ["src/calc.py"], '
+        '"target_test_files": []}'
+    )
+    good_impl = (
+        "FILE: src/calc.py\n"
+        "<<<<<<< SEARCH\n"
+        "def add(a: int, b: int) -> int:\n"
+        "    return a + b\n"
+        "=======\n"
+        "def add(a: int, b: int) -> int:\n"
+        "    return int(a + b)\n"
+        ">>>>>>> REPLACE\n"
+    )
+    llm = ScriptedLLM([plan_1, plan_2, good_impl])
+    engine = ForgeEngine(ForgeConfig(), store, llm, verifier)
+    paused = engine.start_run("add 수정", repo, auto_approve=False)
+    rejected = engine.resume_run(paused.run_id, approve=False)
+    assert rejected.state == RunState.HALT
+    assert rejected.baseline_commit_sha is None
+
+    retried = engine.retry_from_checkpoint(rejected.run_id)
+    assert retried.state == RunState.DONE
+    assert retried.plan is not None
+    assert retried.plan.subtasks == ["새로운 계획"]
+

@@ -161,11 +161,24 @@ class ForgeEngine:
                 f"Run '{run_id}' is in state '{run.state.value}', not HALT"
             )
 
+        prior_halt = run.halt_reason
+        added = max(1, int(extra_attempts))
         self.config.max_attempts = max(
-            self.config.max_attempts, len(run.attempts) + max(1, extra_attempts)
+            self.config.max_attempts, len(run.attempts) + added
         )
+        if (
+            prior_halt == HaltReason.BUDGET_EXCEEDED
+            or run.total_tokens >= self.config.max_total_tokens
+            or run.total_cost_usd >= self.config.max_cost_usd
+        ):
+            self.config.max_total_tokens = max(
+                self.config.max_total_tokens, run.total_tokens + 40_000
+            )
+            self.config.max_cost_usd = max(
+                self.config.max_cost_usd, round(run.total_cost_usd + 0.25, 4)
+            )
+
         run.halt_reason = HaltReason.NONE
-        run.last_error_output = ""
 
         repo_root = Path(run.repo_root).resolve()
         git_ops = GitOps(repo_root)
@@ -177,16 +190,28 @@ class ForgeEngine:
         # Checkpoint 2: Plan and Test Lock already completed -> resume directly at IMPLEMENT
         if run.plan is not None and run.baseline_commit_sha is not None:
             git_ops.rollback_to_snapshot(run.baseline_commit_sha)
+            # Clear tree_hash on pre-retry attempts so fresh attempts after rollback do not falsely trigger oscillation
+            for att in run.attempts:
+                att.tree_hash = ""
             run.state = RunState.IMPLEMENT
             self.store.save_run(run)
             return self._execute_implement_verify_loop(run)
 
+        # If halted before test lock due to policy violation (e.g., rejected plan), re-plan from scratch
+        if prior_halt == HaltReason.POLICY_VIOLATION:
+            run.plan = None
+            run.last_error_output = ""
+            git_ops.discard_working_changes()
+            return self._execute_plan_phase(run, auto_approve=True)
+
         # Checkpoint 1: Plan completed -> resume at WRITE_TEST
         if run.plan is not None:
+            run.last_error_output = ""
             git_ops.discard_working_changes()
             return self._continue_from_approval(run)
 
         # Checkpoint 0: Plan failed -> re-run from PLAN
+        run.last_error_output = ""
         git_ops.discard_working_changes()
         return self._execute_plan_phase(run, auto_approve=True)
 

@@ -574,6 +574,17 @@ def test_dashboard_stage3_issue_import_retry_and_pr_endpoints(
             done_detail = json.loads(resp.read().decode("utf-8"))
         assert "## 작업 요약" in done_detail["pr_draft_markdown"]
 
+        # 2b. Invalid extra_attempts returns 400 without leaking worker_lock
+        req_bad_retry = urllib.request.Request(
+            f"{base_url}/api/runs/run-halt01/retry",
+            data=json.dumps({"extra_attempts": "invalid"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_bad:
+            urllib.request.urlopen(req_bad_retry)
+        assert exc_bad.value.code == 400
+
         # 3. POST /api/runs/run-halt01/retry transitions HALT -> DONE via checkpoint retry
         req_retry = urllib.request.Request(
             f"{base_url}/api/runs/run-halt01/retry",

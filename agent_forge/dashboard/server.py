@@ -131,8 +131,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             return None
-        if length <= 0 or length > 262144:
+        if length == 0:
             return {}
+        if length < 0 or length > 262144:
+            return None
         raw = self.rfile.read(length)
         try:
             parsed = json.loads(raw.decode("utf-8"))
@@ -418,7 +420,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             issue_number=issue_number,
             issue_url=issue_url,
         )
-        store.save_run(initial_record)
+        try:
+            store.save_run(initial_record)
+        except Exception as exc:
+            self.server.worker_lock.release()
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": f"Failed to initialize run record: {exc}"},
+            )
+            return
 
         def _worker() -> None:
             try:
@@ -514,6 +524,28 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        raw_extra = body.get("extra_attempts", 3)
+        if isinstance(raw_extra, bool):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "extra_attempts must be an integer between 1 and 20."},
+            )
+            return
+        try:
+            extra_attempts = int(raw_extra)
+        except (ValueError, TypeError):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "extra_attempts must be an integer between 1 and 20."},
+            )
+            return
+        if extra_attempts < 1 or extra_attempts > 20:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "extra_attempts must be between 1 and 20."},
+            )
+            return
+
         if not self.server.worker_lock.acquire(blocking=False):
             self._send_json(
                 HTTPStatus.CONFLICT,
@@ -521,7 +553,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        extra_attempts = int(body.get("extra_attempts") or 3)
         custom_test_cmd = str(body.get("test_cmd") or "").strip() or _default_test_cmd_for_repo(
             Path(run.repo_root)
         )
@@ -564,7 +595,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             run.pr_draft_markdown = build_pr_draft_markdown(run)
             store.save_run(run)
 
-        if bool(body.get("publish", False)):
+        if bool(body.get("publish", False)) and not run.pr_url.strip():
             repo_path = Path(run.repo_root)
             slug = (
                 detect_github_repo(repo_path)

@@ -178,7 +178,11 @@ def issue_run_command(
         raise typer.Exit(code=1)
 
     token = resolve_github_token(repo)
-    issue_data = fetch_github_issue(slug, issue_number, token=token)
+    try:
+        issue_data = fetch_github_issue(slug, issue_number, token=token)
+    except Exception as exc:
+        console.print(f"[red]GitHub 이슈 조회 실패: {exc}[/red]")
+        raise typer.Exit(code=1)
     task = format_issue_as_task(issue_data)
 
     config = ForgeConfig()
@@ -236,7 +240,11 @@ def retry_command(
             shlex.split(test_cmd), timeout_seconds=config.test_timeout_seconds
         )
     engine = ForgeEngine(config, store, llm, verifier)  # type: ignore[arg-type]
-    record = engine.retry_from_checkpoint(run_id, extra_attempts=extra_attempts)
+    try:
+        record = engine.retry_from_checkpoint(run_id, extra_attempts=extra_attempts)
+    except Exception as exc:
+        console.print(f"[red]체크포인트 재실행 실패: {exc}[/red]")
+        raise typer.Exit(code=1)
     console.print(
         f"[green]Run '{record.run_id}' retried from checkpoint -> {record.state.value} ({record.halt_reason.value})[/green]"
     )
@@ -274,9 +282,13 @@ def pr_command(
         if not slug or not token:
             console.print("[red]GitHub 저장소 또는 인증 토큰을 찾을 수 없습니다.[/red]")
             raise typer.Exit(code=1)
-        pr_url = publish_github_pr(
-            run, repo_slug=slug, token=token, base_branch=base_branch, draft=True
-        )
+        try:
+            pr_url = publish_github_pr(
+                run, repo_slug=slug, token=token, base_branch=base_branch, draft=True
+            )
+        except Exception as exc:
+            console.print(f"[red]Draft PR 게시 실패: {exc}[/red]")
+            raise typer.Exit(code=1)
         run.pr_url = pr_url
         store.save_run(run)
         console.print(f"[green]Draft PR 게시 완료: {pr_url}[/green]")

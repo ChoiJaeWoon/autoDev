@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import ssl
 import subprocess
 import urllib.error
 import urllib.request
@@ -12,6 +13,30 @@ from agent_forge.core.state import RunRecord
 GITHUB_REMOTE_RE = re.compile(
     r"(?:github\.com[:/])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?$"
 )
+REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _validate_repo_slug(repo_slug: str) -> str:
+    slug = (repo_slug or "").strip()
+    if not REPO_SLUG_RE.match(slug) or ".." in slug:
+        raise ValueError(f"Invalid GitHub repository slug: '{repo_slug}'")
+    return slug
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """Create a verified SSLContext, using certifi or macOS /etc/ssl/cert.pem if available."""
+    try:
+        import certifi  # type: ignore[import-not-found]
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+    if os.path.isfile("/etc/ssl/cert.pem"):
+        try:
+            return ssl.create_default_context(cafile="/etc/ssl/cert.pem")
+        except Exception:
+            pass
+    return ssl.create_default_context()
 
 
 def resolve_github_token(repo_root: Path | None = None) -> str | None:
@@ -31,7 +56,9 @@ def resolve_github_token(repo_root: Path | None = None) -> str | None:
     search_dirs.append(Path.cwd().resolve())
 
     for d in search_dirs:
-        for candidate in (d / ".env", d.parent / ".env", d.parent.parent / ".env"):
+        cur = d
+        for _ in range(3):
+            candidate = cur / ".env"
             if candidate.is_file():
                 try:
                     for raw_line in candidate.read_text(encoding="utf-8").splitlines():
@@ -49,6 +76,9 @@ def resolve_github_token(repo_root: Path | None = None) -> str | None:
                                 return cleaned
                 except OSError:
                     pass
+            if (cur / ".git").exists() or cur.parent == cur:
+                break
+            cur = cur.parent
 
     mcp_cfg = Path.home() / ".gemini" / "config" / "mcp_config.json"
     if mcp_cfg.is_file():
@@ -95,7 +125,12 @@ def fetch_github_issue(
     repo_slug: str, issue_number: int, token: str | None = None
 ) -> dict:
     """Fetch a single GitHub issue by number via the GitHub REST API."""
-    url = f"https://api.github.com/repos/{repo_slug}/issues/{int(issue_number)}"
+    slug = _validate_repo_slug(repo_slug)
+    num = int(issue_number)
+    if num < 1:
+        raise ValueError(f"Issue number must be >= 1, got {issue_number}")
+
+    url = f"https://api.github.com/repos/{slug}/issues/{num}"
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "AgentForge-Ops/1.0",
@@ -104,11 +139,19 @@ def fetch_github_issue(
         headers["Authorization"] = f"Bearer {token}"
 
     req = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(
+            req, timeout=15, context=_build_ssl_context()
+        ) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")[:300]
+        raise RuntimeError(
+            f"GitHub API HTTP {exc.code} fetching issue #{num}: {err_body}"
+        ) from exc
 
     return {
-        "number": int(data.get("number", issue_number)),
+        "number": int(data.get("number", num)),
         "title": str(data.get("title") or "").strip(),
         "body": str(data.get("body") or "").strip(),
         "html_url": str(data.get("html_url") or ""),
@@ -139,7 +182,10 @@ def build_pr_draft_markdown(run: RunRecord) -> str:
             lines.append(f"- **연결 이슈:** Closes #{run.issue_number}")
 
     lines.append(f"- **실행 ID / 브랜치:** `{run.run_id}` (`{run.branch_name}`)")
-    lines.append(f"- **수행 미션:** {run.task_description.splitlines()[0]}")
+    first_line = (
+        run.task_description.splitlines()[0] if run.task_description else "-"
+    )
+    lines.append(f"- **수행 미션:** {first_line}")
     lines.append("")
 
     if run.plan is not None:
@@ -169,10 +215,18 @@ def build_pr_draft_markdown(run: RunRecord) -> str:
         f"- **누적 토큰 및 비용:** {run.total_tokens:,} tokens (${run.total_cost_usd:.4f})"
     )
 
-    if "diff_ratio" in last_artifacts or "after_png" in last_artifacts:
-        ratio_raw = float(last_artifacts.get("diff_ratio", "0.0") or 0.0)
+    if (
+        "diff_ratio" in last_artifacts
+        or "after_screenshot" in last_artifacts
+        or "after_png" in last_artifacts
+    ):
+        try:
+            ratio_raw = float(last_artifacts.get("diff_ratio", "0.0") or 0.0)
+        except ValueError:
+            ratio_raw = 0.0
+        dom_status = last_artifacts.get("dom_status", "PASS")
         lines.append(
-            f"- **Playwright 시각 회귀 검증:** 통과 (픽셀 변경률 `{ratio_raw * 100:.2f}%`, 가로 레이아웃 오버플로 및 JS 런타임 오류 0건)"
+            f"- **Playwright 시각 회귀 검증:** {dom_status} (픽셀 변경률 `{ratio_raw * 100:.2f}%`, 가로 레이아웃 오버플로 및 JS 런타임 오류 0건)"
         )
 
     return "\n".join(lines).strip() + "\n"
@@ -200,16 +254,32 @@ def publish_github_pr(
     git_push: bool = True,
 ) -> str:
     """Push the run branch (optional) and create a Draft Pull Request on GitHub."""
+    slug = _validate_repo_slug(repo_slug)
     if git_push:
         push_cwd = Path(run.repo_root).resolve()
-        subprocess.run(
-            ["git", "push", "-u", "origin", run.branch_name],
-            cwd=push_cwd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        try:
+            subprocess.run(
+                [
+                    "git",
+                    "push",
+                    "--force-with-lease",
+                    "-u",
+                    "origin",
+                    run.branch_name,
+                ],
+                cwd=push_cwd,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr_msg = (exc.stderr or exc.stdout or "").strip()[:300]
+            raise RuntimeError(
+                f"Git push failed for branch '{run.branch_name}': {stderr_msg}"
+            ) from exc
 
     body = run.pr_draft_markdown.strip() or build_pr_draft_markdown(run)
     payload = {
@@ -220,7 +290,7 @@ def publish_github_pr(
         "draft": bool(draft),
     }
 
-    url = f"https://api.github.com/repos/{repo_slug}/pulls"
+    url = f"https://api.github.com/repos/{slug}/pulls"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -232,6 +302,14 @@ def publish_github_pr(
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        resp_data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(
+            req, timeout=20, context=_build_ssl_context()
+        ) as resp:
+            resp_data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")[:300]
+        raise RuntimeError(
+            f"GitHub API HTTP {exc.code} creating PR: {err_body}"
+        ) from exc
     return str(resp_data.get("html_url") or "")
