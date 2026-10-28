@@ -149,3 +149,60 @@ def test_dashboard_api_list_and_get_run_with_git_diffs(sample_dashboard_env):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(f"{base_url}/api/runs/run-missing")
     assert exc_info.value.code == 404
+
+
+def test_dashboard_static_assets_and_path_traversal_guard(sample_dashboard_env):
+    base_url, _ = sample_dashboard_env
+
+    # Root HTML
+    with urllib.request.urlopen(f"{base_url}/") as resp:
+        assert resp.status == 200
+        html = resp.read().decode("utf-8")
+    for required_id in (
+        'id="run-list"',
+        'id="fsm-pipeline"',
+        'id="plan-scope"',
+        'id="attempts-table"',
+        'id="diff-viewer"',
+    ):
+        assert required_id in html
+
+    # CSS
+    with urllib.request.urlopen(f"{base_url}/static/styles.css") as resp:
+        assert resp.status == 200
+        css = resp.read().decode("utf-8")
+    assert "#0d1117" in css
+    assert "#161b22" in css
+    assert "#30363d" in css
+    assert "tabular-nums" in css
+
+    # JS
+    with urllib.request.urlopen(f"{base_url}/static/app.js") as resp:
+        assert resp.status == 200
+        js = resp.read().decode("utf-8")
+    assert "LOCKED IN IMPLEMENT" in js
+    assert "textContent" in js
+
+    # Path traversal blocked
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{base_url}/static/../../pyproject.toml")
+    assert exc_info.value.code == 404
+
+
+def test_dashboard_files_contain_zero_emojis():
+    import re
+
+    emoji_pattern = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]")
+    dashboard_dir = Path(__file__).resolve().parent.parent / "agent_forge" / "dashboard"
+    files_to_check = [
+        dashboard_dir / "server.py",
+        dashboard_dir / "static" / "index.html",
+        dashboard_dir / "static" / "styles.css",
+        dashboard_dir / "static" / "app.js",
+    ]
+    for file_path in files_to_check:
+        assert file_path.is_file(), f"Missing file: {file_path}"
+        content = file_path.read_text(encoding="utf-8")
+        matches = emoji_pattern.findall(content)
+        assert not matches, f"Emoji found in {file_path.name}: {matches}"
+

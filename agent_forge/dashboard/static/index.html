@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Forge — Inspector</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand-title">AGENT FORGE</span>
+      <span class="brand-tag">HARNESS INSPECTOR</span>
+      <span class="topbar-divider"></span>
+      <span class="meta-label">DB</span>
+      <code id="db-path-label" class="meta-code">.forge/state.db</code>
+    </div>
+    <div class="topbar-right">
+      <span id="run-count-label" class="meta-label">0 RUNS</span>
+      <button id="auto-refresh-btn" class="btn btn-toggle" type="button">AUTO-REFRESH: OFF</button>
+      <button id="refresh-btn" class="btn" type="button">REFRESH</button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-title">EXECUTION RUNS</div>
+        <div id="filter-bar" class="filter-bar">
+          <button class="filter-btn active" data-filter="ALL" type="button">ALL</button>
+          <button class="filter-btn" data-filter="DONE" type="button">DONE</button>
+          <button class="filter-btn" data-filter="HALT" type="button">HALT</button>
+          <button class="filter-btn" data-filter="ACTIVE" type="button">ACTIVE</button>
+        </div>
+      </div>
+      <div id="run-list" class="run-list" role="list"></div>
+    </aside>
+
+    <main class="inspector">
+      <div id="inspector-empty" class="empty-state">
+        <div class="empty-title">NO RUN SELECTED</div>
+        <p class="empty-desc">Select an execution run from the left panel or trigger a new run via CLI (<code>forge run</code>).</p>
+      </div>
+
+      <div id="inspector-content" class="inspector-content hidden">
+        <section class="panel run-header-panel">
+          <div class="run-header-top">
+            <div class="run-id-group">
+              <code id="detail-run-id" class="run-id-large">run-00000000</code>
+              <span id="detail-state-badge" class="badge">INIT</span>
+              <span id="detail-halt-badge" class="badge badge-halt hidden">NONE</span>
+            </div>
+            <div class="run-repo-group">
+              <span class="meta-label">REPO</span>
+              <code id="detail-repo-root" class="meta-code">-</code>
+            </div>
+          </div>
+          <h1 id="detail-task-desc" class="task-title">-</h1>
+
+          <div class="telemetry-strip">
+            <div class="telemetry-cell">
+              <span class="telemetry-label">BRANCH</span>
+              <code id="detail-branch" class="telemetry-value">-</code>
+            </div>
+            <div class="telemetry-cell">
+              <span class="telemetry-label">BASELINE TEST COMMIT</span>
+              <div class="telemetry-inline">
+                <code id="detail-baseline-sha" class="telemetry-value">-</code>
+                <button id="view-baseline-diff-btn" class="btn-micro hidden" type="button">DIFF</button>
+              </div>
+            </div>
+            <div class="telemetry-cell">
+              <span class="telemetry-label">ATTEMPTS</span>
+              <code id="detail-attempts-count" class="telemetry-value">0</code>
+            </div>
+            <div class="telemetry-cell">
+              <span class="telemetry-label">TOTAL TOKENS</span>
+              <code id="detail-tokens" class="telemetry-value">0</code>
+            </div>
+            <div class="telemetry-cell">
+              <span class="telemetry-label">TOTAL COST (USD)</span>
+              <code id="detail-cost" class="telemetry-value">$0.0000</code>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <span class="panel-title">FSM LIFECYCLE PIPELINE</span>
+            <span class="panel-subtitle">Deterministic state transitions and guard checkpoints</span>
+          </div>
+          <div id="fsm-pipeline" class="fsm-pipeline"></div>
+        </section>
+
+        <section id="plan-scope" class="panel">
+          <div class="panel-header">
+            <span class="panel-title">PLAN SPECIFICATION &amp; FILE GUARD WHITELIST</span>
+            <span class="panel-subtitle">Files outside this scope are rejected; test files lock to Read-Only during IMPLEMENT</span>
+          </div>
+          <div class="plan-grid">
+            <div class="plan-col">
+              <div class="subpanel-title">DECOMPOSED SUBTASKS</div>
+              <ol id="plan-subtasks" class="subtask-list"></ol>
+            </div>
+            <div class="plan-col">
+              <div class="subpanel-title">DECLARED FILE PERMISSIONS</div>
+              <ul id="plan-files" class="file-list"></ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <span class="panel-title">ATTEMPT HISTORY &amp; VERIFICATION GATE</span>
+            <span class="panel-subtitle">Click a row to inspect its Git commit patch below</span>
+          </div>
+          <div class="table-wrap">
+            <table id="attempts-table" class="data-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>PHASE</th>
+                  <th>GATE</th>
+                  <th>EXIT</th>
+                  <th>TREE HASH</th>
+                  <th>COMMIT</th>
+                  <th>TOKENS</th>
+                  <th>COST</th>
+                  <th>PATCH SUMMARY</th>
+                  <th>ERROR FINGERPRINT</th>
+                </tr>
+              </thead>
+              <tbody id="attempts-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <span id="diff-viewer-title" class="panel-title">COMMIT PATCH INSPECTOR</span>
+            <div class="diff-selector-bar">
+              <button id="diff-btn-baseline" class="btn-micro" type="button">TEST LOCK COMMIT</button>
+              <span id="diff-attempt-buttons" class="diff-attempt-buttons"></span>
+            </div>
+          </div>
+          <pre id="diff-viewer" class="diff-viewer"></pre>
+        </section>
+
+        <section class="panel diagnostics-grid">
+          <div class="diag-col">
+            <div class="panel-header">
+              <span class="panel-title">REFLECTION NOTES (LOOP GUARD)</span>
+            </div>
+            <ul id="reflection-list" class="reflection-list"></ul>
+          </div>
+          <div class="diag-col">
+            <div class="panel-header">
+              <span class="panel-title">LAST VERIFIER / GUARD OUTPUT</span>
+            </div>
+            <pre id="error-output" class="terminal-box"></pre>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
