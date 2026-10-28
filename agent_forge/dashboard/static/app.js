@@ -515,6 +515,14 @@
 
   function initControls() {
     el("mission-form").addEventListener("submit", submitNewMission);
+    el("mission-input").addEventListener("input", (evt) => {
+      const val = (evt.target.value || "").toLowerCase();
+      if (val.includes(".jsp") || val.includes(".java") || val.includes("boardservice") || val.includes("게시판")) {
+        el("mission-repo").value = "targets/legacy-jsp-app";
+      } else if (val.includes("calculator") || val.includes(".py")) {
+        el("mission-repo").value = "targets/python-mini-calc";
+      }
+    });
     el("mission-input").addEventListener("keydown", (evt) => {
       if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
         evt.preventDefault();

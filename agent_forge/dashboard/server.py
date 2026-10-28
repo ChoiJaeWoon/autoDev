@@ -309,6 +309,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
 
         raw_repo = str(body.get("repo_root") or "targets/python-mini-calc").strip()
+        if raw_repo == "targets/python-mini-calc" and any(
+            kw in task.lower() for kw in (".jsp", ".java", "boardservice", "게시판")
+        ):
+            legacy_candidate = (self.server.workspace_root / "targets/legacy-jsp-app").resolve()
+            if legacy_candidate.is_dir():
+                raw_repo = "targets/legacy-jsp-app"
+
         candidate_repo = (
             Path(raw_repo).resolve()
             if Path(raw_repo).is_absolute()
