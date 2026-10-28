@@ -206,3 +206,29 @@ def test_dashboard_files_contain_zero_emojis():
         matches = emoji_pattern.findall(content)
         assert not matches, f"Emoji found in {file_path.name}: {matches}"
 
+
+def test_cli_ui_command_invokes_dashboard_server(monkeypatch, tmp_path: Path):
+    from typer.testing import CliRunner
+    import agent_forge.cli as cli_module
+
+    called = {}
+
+    def fake_start_dashboard_server(db_path: Path, host: str, port: int) -> None:
+        called["db_path"] = db_path
+        called["host"] = host
+        called["port"] = port
+
+    monkeypatch.setattr(cli_module, "start_dashboard_server", fake_start_dashboard_server, raising=False)
+    runner = CliRunner()
+    db_file = tmp_path / "custom.db"
+    result = runner.invoke(
+        cli_module.app,
+        ["ui", "--port", "9123", "--host", "127.0.0.1", "--db-path", str(db_file)],
+    )
+    assert result.exit_code == 0, result.output
+    assert called["port"] == 9123
+    assert called["host"] == "127.0.0.1"
+    assert called["db_path"] == db_file
+    assert "http://127.0.0.1:9123" in result.output
+
+

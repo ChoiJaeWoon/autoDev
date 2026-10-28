@@ -10,6 +10,7 @@ from rich.table import Table
 from agent_forge.config import ForgeConfig
 from agent_forge.core.engine import ForgeEngine
 from agent_forge.core.store import StateStore
+from agent_forge.dashboard.server import start_dashboard_server
 from agent_forge.llm.client import OpenAICompatibleClient
 from agent_forge.verifiers.test_runner import SubprocessTestVerifier
 
@@ -132,6 +133,26 @@ def resume_command(
     console.print(
         f"[green]Run '{record.run_id}' resumed -> {record.state.value} ({record.halt_reason.value})[/green]"
     )
+
+
+@app.command("ui")
+def ui_command(
+    port: int = typer.Option(8765, "--port", help="인스펙터 웹 서버 포트"),
+    host: str = typer.Option("127.0.0.1", "--host", help="바인딩 호스트 주소"),
+    db_path: Path = typer.Option(
+        Path(".forge/state.db"), "--db-path", help="SQLite 체크포인트 저장 경로"
+    ),
+) -> None:
+    """SQLite 체크포인트 및 Git 커밋 패치를 조회하는 웹 인스펙터를 실행합니다."""
+    console.print(
+        Panel(
+            f"[bold]URL:[/bold] http://{host}:{port}\n"
+            f"[bold]DB Path:[/bold] {db_path}\n"
+            f"종료하려면 Ctrl+C를 누르세요.",
+            title="Agent Forge Web Inspector",
+        )
+    )
+    start_dashboard_server(db_path=db_path, host=host, port=port)
 
 
 if __name__ == "__main__":
