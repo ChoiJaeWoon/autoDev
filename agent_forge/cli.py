@@ -12,6 +12,7 @@ from agent_forge.core.engine import ForgeEngine
 from agent_forge.core.store import StateStore
 from agent_forge.dashboard.server import start_dashboard_server
 from agent_forge.llm.client import OpenAICompatibleClient
+from agent_forge.verifiers.legacy_web import PlaywrightVisualVerifier
 from agent_forge.verifiers.test_runner import SubprocessTestVerifier
 
 app = typer.Typer(help="Agent Forge: Autonomous Coding Harness with Guardrails")
@@ -37,9 +38,12 @@ def run_command(
     config = ForgeConfig(max_attempts=max_attempts)
     store = StateStore(db_path)
     llm = OpenAICompatibleClient(config)
-    verifier = SubprocessTestVerifier(
-        shlex.split(test_cmd), timeout_seconds=config.test_timeout_seconds
-    )
+    if (repo / "pom.xml").is_file() and not (repo / "pyproject.toml").is_file():
+        verifier = PlaywrightVisualVerifier()
+    else:
+        verifier = SubprocessTestVerifier(
+            shlex.split(test_cmd), timeout_seconds=config.test_timeout_seconds
+        )
     engine = ForgeEngine(config, store, llm, verifier)
 
     record = engine.start_run(task, repo_root=repo, auto_approve=auto_approve)

@@ -854,6 +854,50 @@ code, pre, .mono {
   background-color: var(--accent-blue-bg);
 }
 
+/* Visual Regression Grid */
+.visual-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  padding: 20px 24px;
+  background-color: var(--bg-inset);
+}
+
+.visual-card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.visual-card-label {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--bg-surface);
+}
+
+.visual-img-wrap {
+  padding: 12px;
+  background-color: var(--bg-inset);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+}
+
+.vis-screenshot {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  display: block;
+}
+
 /* Diff Viewer */
 .diff-selector-bar, .diff-attempt-buttons {
   display: flex;

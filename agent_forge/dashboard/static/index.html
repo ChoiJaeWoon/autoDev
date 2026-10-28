@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Agent Forge — Workspace &amp; Inspector</title>
-  <link rel="stylesheet" href="/static/styles.css?v=2" />
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
 </head>
 <body>
   <header class="topbar">
@@ -204,6 +204,39 @@
           </div>
         </section>
 
+        <section id="visual-regression-panel" class="panel hidden">
+          <div class="panel-header">
+            <div>
+              <span class="panel-title">Visual Regression &amp; Browser Layout Gate (Playwright)</span>
+              <p class="panel-subtitle">Headless Chromium 렌더링 전후 스크린샷 비교 및 DOM/레이아웃 검증 결과</p>
+            </div>
+            <div class="diff-selector-bar">
+              <span id="vis-dom-badge" class="badge badge-pass">DOM: PASS</span>
+              <span id="vis-diff-ratio-badge" class="badge badge-active">DIFF: 0.00%</span>
+            </div>
+          </div>
+          <div class="visual-grid">
+            <div class="visual-card">
+              <div class="visual-card-label">Before (Baseline)</div>
+              <div class="visual-img-wrap">
+                <img id="vis-img-baseline" class="vis-screenshot" alt="Baseline screenshot" />
+              </div>
+            </div>
+            <div class="visual-card">
+              <div class="visual-card-label">After (Modified)</div>
+              <div class="visual-img-wrap">
+                <img id="vis-img-after" class="vis-screenshot" alt="After screenshot" />
+              </div>
+            </div>
+            <div class="visual-card">
+              <div class="visual-card-label">Pixel Diff Highlight</div>
+              <div class="visual-img-wrap">
+                <img id="vis-img-diff" class="vis-screenshot" alt="Visual diff heatmap" />
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="panel">
           <div class="panel-header">
             <span id="diff-viewer-title" class="panel-title">Commit Patch Inspector</span>
@@ -233,6 +266,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=2"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>
