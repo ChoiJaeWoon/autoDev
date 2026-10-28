@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-forge"
+version = "0.1.0"
+description = "Stage 1 Autonomous Coding Harness with FSM, File Guards, Fuzzy Patching, and Loop/Budget Brakes"
+readme = "docs/superpowers/specs/2026-10-28-agent-forge-harness-design.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "openai>=1.0",
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+forge = "agent_forge.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_forge*"]
+
+[tool.setuptools.package-data]
+"agent_forge.dashboard" = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

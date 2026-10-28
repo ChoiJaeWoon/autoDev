@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Forge — Workspace &amp; Inspector</title>
+  <link rel="stylesheet" href="/static/styles.css?v=2" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand-title">Agent Forge</span>
+      <span class="brand-tag">Harness Studio</span>
+      <span class="topbar-divider"></span>
+      <span class="meta-label">Checkpoint DB</span>
+      <code id="db-path-label" class="meta-code">.forge/state.db</code>
+    </div>
+    <div class="topbar-right">
+      <span id="worker-status-pill" class="badge badge-idle">IDLE</span>
+      <span id="run-count-label" class="meta-label">0 Runs</span>
+      <button id="auto-refresh-btn" class="btn btn-toggle" type="button">Auto-Refresh: Off</button>
+      <button id="refresh-btn" class="btn" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar">
+      <div class="sidebar-card">
+        <div class="sidebar-header">
+          <div class="sidebar-title-row">
+            <span class="sidebar-title">Execution History</span>
+          </div>
+          <div id="filter-bar" class="filter-bar">
+            <button class="filter-btn active" data-filter="ALL" type="button">All</button>
+            <button class="filter-btn" data-filter="DONE" type="button">Done</button>
+            <button class="filter-btn" data-filter="HALT" type="button">Halt</button>
+            <button class="filter-btn" data-filter="ACTIVE" type="button">Active</button>
+          </div>
+        </div>
+        <div id="run-list" class="run-list" role="list"></div>
+      </div>
+    </aside>
+
+    <main class="inspector">
+      <section class="panel composer-panel">
+        <form id="mission-form" class="composer-form">
+          <div class="composer-header">
+            <div>
+              <h2 class="composer-title">New Autonomous Mission</h2>
+              <p class="composer-subtitle">요구사항을 입력하면 계획 수립, 테스트 잠금, 코드 패치, 검증 루프를 자율 수행합니다.</p>
+            </div>
+            <span id="mission-feedback" class="composer-feedback hidden"></span>
+          </div>
+
+          <textarea
+            id="mission-input"
+            class="composer-textarea"
+            rows="2"
+            placeholder="무엇을 개발하거나 수정할까요? (예: Calculator 클래스에 multiply(a, b) 메서드를 추가하고 단위 테스트도 작성해 줘)"
+            required
+          ></textarea>
+
+          <div class="composer-controls">
+            <div class="composer-options">
+              <label class="control-group">
+                <span class="control-label">Target Project</span>
+                <select id="mission-repo" class="control-select">
+                  <option value="targets/python-mini-calc">targets/python-mini-calc (Python / Pytest)</option>
+                  <option value="targets/legacy-jsp-app">targets/legacy-jsp-app (Java / JSP)</option>
+                </select>
+              </label>
+
+              <label class="control-group">
+                <span class="control-label">Approval Gate</span>
+                <select id="mission-approval" class="control-select">
+                  <option value="auto">Auto-Approve (전 과정 자율 실행)</option>
+                  <option value="manual">Require Approval (계획 수립 후 일시 정지)</option>
+                </select>
+              </label>
+            </div>
+
+            <button id="mission-submit-btn" class="btn btn-primary" type="submit">
+              Dispatch Mission
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <div id="inspector-empty" class="panel empty-state">
+        <div class="empty-title">No Run Selected</div>
+        <p class="empty-desc">위 입력창에서 새 미션을 실행하거나 좌측 목록에서 실행 기록을 선택하세요.</p>
+      </div>
+
+      <div id="inspector-content" class="inspector-content hidden">
+        <section id="approval-banner" class="panel approval-banner hidden">
+          <div class="approval-info">
+            <span class="badge badge-warn">WAITING_APPROVAL</span>
+            <div>
+              <h3 class="approval-title">계획 승인이 필요합니다</h3>
+              <p class="approval-desc">아래 분해된 작업(Subtasks)과 수정 허용 파일 목록을 검토한 뒤 진행 여부를 선택하세요.</p>
+            </div>
+          </div>
+          <div class="approval-actions">
+            <button id="reject-run-btn" class="btn btn-danger" type="button">Reject &amp; Halt</button>
+            <button id="approve-run-btn" class="btn btn-primary" type="button">Approve &amp; Continue</button>
+          </div>
+        </section>
+
+        <section class="panel run-header-panel">
+          <div class="run-header-top">
+            <div class="run-id-group">
+              <code id="detail-run-id" class="run-id-large">run-00000000</code>
+              <span id="detail-state-badge" class="badge">INIT</span>
+              <span id="detail-halt-badge" class="badge badge-halt hidden">NONE</span>
+            </div>
+            <div class="run-repo-group">
+              <span class="meta-label">Repository</span>
+              <code id="detail-repo-root" class="meta-code">-</code>
+            </div>
+          </div>
+          <h1 id="detail-task-desc" class="task-title">-</h1>
+
+          <div class="telemetry-strip">
+            <div class="telemetry-cell">
+              <span class="telemetry-label">Git Branch</span>
+              <code id="detail-branch" class="telemetry-value">-</code>
+            </div>
+            <div class="telemetry-cell">
+              <span class="telemetry-label">Baseline Test Commit</span>
+              <div class="telemetry-inline">
+                <code id="detail-baseline-sha" class="telemetry-value">-</code>
+                <button id="view-baseline-diff-btn" class="btn-micro hidden" type="button">View Diff</button>
+              </div>
+            </div>
+            <div class="telemetry-cell">
+              <span class="telemetry-label">Attempts</span>
+              <code id="detail-attempts-count" class="telemetry-value">0</code>
+            </div>
+            <div class="telemetry-cell">
+              <span class="telemetry-label">Total Tokens</span>
+              <code id="detail-tokens" class="telemetry-value">0</code>
+            </div>
+            <div class="telemetry-cell">
+              <span class="telemetry-label">Total Cost (USD)</span>
+              <code id="detail-cost" class="telemetry-value">$0.0000</code>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <span class="panel-title">FSM Lifecycle Pipeline</span>
+              <p class="panel-subtitle">Deterministic state transitions and guard checkpoints</p>
+            </div>
+          </div>
+          <div id="fsm-pipeline" class="fsm-pipeline"></div>
+        </section>
+
+        <section id="plan-scope" class="panel">
+          <div class="panel-header">
+            <div>
+              <span class="panel-title">Plan Specification &amp; File Guard Scope</span>
+              <p class="panel-subtitle">선언되지 않은 파일 수정은 차단되며, 구현 단계에서는 테스트 파일이 읽기 전용으로 잠깁니다.</p>
+            </div>
+          </div>
+          <div class="plan-grid">
+            <div class="plan-col">
+              <div class="subpanel-title">Decomposed Subtasks</div>
+              <ol id="plan-subtasks" class="subtask-list"></ol>
+            </div>
+            <div class="plan-col">
+              <div class="subpanel-title">Declared File Permissions</div>
+              <ul id="plan-files" class="file-list"></ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <span class="panel-title">Attempt History &amp; Verification Gate</span>
+              <p class="panel-subtitle">시도 행을 클릭하면 아래 패치 뷰어에서 실제 Git 커밋 Diff를 확인할 수 있습니다.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="attempts-table" class="data-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Phase</th>
+                  <th>Gate</th>
+                  <th>Exit</th>
+                  <th>Tree Hash</th>
+                  <th>Commit</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                  <th>Patch Summary</th>
+                  <th>Error Fingerprint</th>
+                </tr>
+              </thead>
+              <tbody id="attempts-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <span id="diff-viewer-title" class="panel-title">Commit Patch Inspector</span>
+            <div class="diff-selector-bar">
+              <button id="diff-btn-baseline" class="btn-micro" type="button">Test Lock Commit</button>
+              <span id="diff-attempt-buttons" class="diff-attempt-buttons"></span>
+            </div>
+          </div>
+          <pre id="diff-viewer" class="diff-viewer"></pre>
+        </section>
+
+        <section class="diagnostics-grid">
+          <div class="panel diag-col">
+            <div class="panel-header">
+              <span class="panel-title">Reflection Notes (Loop Guard)</span>
+            </div>
+            <ul id="reflection-list" class="reflection-list"></ul>
+          </div>
+          <div class="panel diag-col">
+            <div class="panel-header">
+              <span class="panel-title">Last Verifier / Guard Output</span>
+            </div>
+            <pre id="error-output" class="terminal-box"></pre>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js?v=2"></script>
+</body>
+</html>
