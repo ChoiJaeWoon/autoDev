@@ -15,17 +15,18 @@ Step 1-2의 목적은 이 데이터를 브라우저에서 직관적으로 검증
 
 ## 2. 디자인 원칙 및 절대 금지 조건 (Design Principles & Anti-Goals)
 
-### 디자인 톤앤매너 (Developer Inspector Aesthetic)
-- **레퍼런스:** GitHub Actions 워크플로 뷰어, Linear, Sentry 이슈 인스펙터
-- **색상 체계 (Dark Slate & High-Contrast Semantic):**
-  - 배경: `#0d1117`(기본 캔버스), `#161b22`(패널 표면), `#1c2128`(호버/선택 표면)
-  - 보더: `1px solid #30363d` (그림자 대신 날카로운 1px 구조선 사용)
-  - 타이포그래피: 본문 `Inter` / `-apple-system`, 모든 식별자·경로·해시·토큰·비용·로그·Diff는 고정폭(`JetBrains Mono`, `SFMono-Regular`, `monospace`) + `font-variant-numeric: tabular-nums`
+### 디자인 톤앤매너 (Clean White, Soft Curves & Generous Whitespace)
+- **레퍼런스:** Stripe Dashboard, Linear Light Mode, Apple HIG 스타일의 밝고 정돈된 워크스페이스
+- **색상 체계 (Soft Alabaster & Pure White Surface):**
+  - 배경: `#f8fafc`(쿨 화이트 캔버스), `#ffffff`(카드 표면), `#f1f5f9`(인셋/코드 배경)
+  - 보더 & 그림자: `1px solid #e2e8f0`, 은은한 입체감(`0 4px 20px -2px rgba(15, 23, 42, 0.04)`)
+  - 곡선 & 여백: 패널 모서리 `16px`, 입력창·버튼 `10px~12px`, 상태 배지 `9999px`(Pill), 섹션 간격 `20px~24px`, 넉넉한 내부 패딩(`22px~26px`)
+  - 타이포그래피: 본문 `Pretendard` / `Inter`, 모든 식별자·경로·해시·토큰·비용·로그·Diff는 고정폭(`JetBrains Mono`, `SFMono-Regular`, `monospace`) + `font-variant-numeric: tabular-nums`
   - 상태 시맨틱 컬러:
-    - `DONE` / `PASS`: `#2ea043` (텍스트 `#3fb950`)
-    - `HALT` / `FAIL`: `#da3633` (텍스트 `#f85149`)
-    - `WAITING_APPROVAL` / `REFLECT`: `#d29922` (텍스트 `#e3b341`)
-    - 진행 중(`INIT`~`VERIFY`): `#1f6feb` (텍스트 `#58a6ff`)
+    - `DONE` / `PASS`: `#15803d` (배경 `#f0fdf4`, 보더 `#bbf7d0`)
+    - `HALT` / `FAIL`: `#b91c1c` (배경 `#fef2f2`, 보더 `#fecaca`)
+    - `WAITING_APPROVAL` / `REFLECT`: `#b45309` (배경 `#fffbeb`, 보더 `#fde68a`)
+    - 진행 중(`INIT`~`VERIFY`): `#2563eb` (배경 `#eff6ff`, 보더 `#bfdbfe`)
 
 ### Anti-Goals (절대 금지 조건)
 1. **이모지(Emoji) 전면 금지:** HTML, CSS, JS, API 응답 어디에도 이모지(로봇, 체크마트, 불꽃, 로켓 등)를 단 1개도 사용하지 않는다. 모든 상태는 영문 대문자 텍스트 배지(`DONE`, `HALT`, `PASS`, `FAIL`, `LOCKED`)와 6px 단색 상태 점(dot)으로만 표현한다.
@@ -70,8 +71,10 @@ Step 1-2의 목적은 이 데이터를 브라우저에서 직관적으로 검증
   - `agent_forge/dashboard/static/app.js`
 - **HTTP 엔드포인트:**
   - `GET /` 및 `GET /static/<filename>`: 정적 파일 서빙 (경로 탐색 공격 차단 포함)
-  - `GET /api/runs`: 저장된 모든 `RunRecord` 요약 목록 반환 (최신 Run이 먼저 오도록 역순 정렬)
+  - `GET /api/runs`: 저장된 모든 `RunRecord` 요약 목록 및 현재 백그라운드 워커 실행 상태(`worker_busy`) 반환 (최신 Run이 먼저 오도록 역순 정렬)
   - `GET /api/runs/<run_id>`: 특정 `RunRecord` 전체 데이터 + Git 커밋 Diff(`baseline_diff`, `attempt_diffs`) 반환
     - Git Diff 조회 헬퍼(`_resolve_commit_diff(repo_root, commit_sha)`): 타깃 레포지토리(또는 상위 Git 루트)에서 `git show --format= --unified=3 <commit_sha>`를 안전하게 실행해 Unified Diff 문자열을 반환하며, 커밋이나 경로가 없을 때는 빈 문자열로 우아하게 폴백한다.
+  - `POST /api/runs`: 웹 대시보드 내 프롬프트 입력창(`New Autonomous Mission`)에서 한국어 미션, 타깃 레포지토리, 승인 모드(`auto_approve`)를 전달받아 백그라운드 스레드에서 `ForgeEngine.start_run`을 비동기 실행(`202 Accepted`)한다.
+  - `POST /api/runs/<run_id>/resume`: `WAITING_APPROVAL` 상태에 멈춰 있는 Run을 웹에서 승인(`approve: true`) 또는 반려(`approve: false`)하여 재개(`202 Accepted`)한다.
 - **CLI 엔드포인트 (`agent_forge/cli.py`):**
   - `forge ui [--port 8765] [--host 127.0.0.1] [--db-path .forge/state.db]` 명령어를 추가하여 터미널에서 즉시 인스펙터 서버를 기동할 수 있게 한다.

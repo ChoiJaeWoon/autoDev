@@ -112,20 +112,25 @@ def sample_dashboard_env(tmp_path: Path):
     )
     store.save_run(run2)
 
-    server = create_dashboard_server(db_path=db_path, host="127.0.0.1", port=0)
+    server = create_dashboard_server(
+        db_path=db_path,
+        host="127.0.0.1",
+        port=0,
+        workspace_root=tmp_path,
+    )
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
     try:
-        yield f"http://127.0.0.1:{port}", db_path
+        yield f"http://127.0.0.1:{port}", db_path, repo
     finally:
         server.shutdown()
         server.server_close()
 
 
 def test_dashboard_api_list_and_get_run_with_git_diffs(sample_dashboard_env):
-    base_url, _ = sample_dashboard_env
+    base_url, _, _ = sample_dashboard_env
 
     # 1. List runs (newest first)
     with urllib.request.urlopen(f"{base_url}/api/runs") as resp:
@@ -151,29 +156,170 @@ def test_dashboard_api_list_and_get_run_with_git_diffs(sample_dashboard_env):
     assert exc_info.value.code == 404
 
 
+def test_dashboard_post_dispatch_run_and_resume_approval(tmp_path: Path):
+    import time
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "init")
+
+    db_path = tmp_path / "state.db"
+    store = StateStore(db_path)
+
+    class FakeEngine:
+        def __init__(self, store_ref: StateStore):
+            self.store = store_ref
+
+        def start_run(
+            self,
+            task_description: str,
+            repo_root: Path,
+            auto_approve: bool = True,
+            run_id: str | None = None,
+        ) -> RunRecord:
+            rec = RunRecord(
+                run_id=run_id or "run-fake",
+                task_description=task_description,
+                repo_root=str(repo_root),
+                branch_name=f"forge/{run_id}",
+                state=RunState.DONE if auto_approve else RunState.WAITING_APPROVAL,
+                plan=PlanSpec(
+                    subtasks=["계획 1"],
+                    target_source_files=["calc.py"],
+                    target_test_files=[],
+                ),
+            )
+            self.store.save_run(rec)
+            return rec
+
+        def resume_run(self, run_id: str, approve: bool = True) -> RunRecord:
+            rec = self.store.get_run(run_id)
+            assert rec is not None
+            rec.state = RunState.DONE if approve else RunState.HALT
+            if not approve:
+                rec.halt_reason = HaltReason.POLICY_VIOLATION
+            self.store.save_run(rec)
+            return rec
+
+    server = create_dashboard_server(
+        db_path=db_path,
+        host="127.0.0.1",
+        port=0,
+        workspace_root=tmp_path,
+        engine_factory=lambda _db, _cmd: FakeEngine(store),
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{port}"
+
+    try:
+        # 1. Reject empty task
+        req_empty = urllib.request.Request(
+            f"{base_url}/api/runs",
+            data=json.dumps({"task": "   ", "repo_root": "repo"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req_empty)
+        assert exc_info.value.code == 400
+
+        # 2. Reject path traversal outside workspace_root
+        req_traversal = urllib.request.Request(
+            f"{base_url}/api/runs",
+            data=json.dumps({"task": "테스트 미션", "repo_root": "../outside"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req_traversal)
+        assert exc_info.value.code == 400
+
+        # 3. Dispatch run with auto_approve=False -> pauses at WAITING_APPROVAL
+        req_run = urllib.request.Request(
+            f"{base_url}/api/runs",
+            data=json.dumps(
+                {
+                    "task": "multiply 메서드 추가해 줘",
+                    "repo_root": "repo",
+                    "auto_approve": False,
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req_run) as resp:
+            assert resp.status == 202
+            created = json.loads(resp.read().decode("utf-8"))
+        run_id = created["run_id"]
+
+        # Wait briefly for background thread
+        for _ in range(20):
+            r = store.get_run(run_id)
+            if r and r.state == RunState.WAITING_APPROVAL:
+                break
+            time.sleep(0.02)
+
+        paused = store.get_run(run_id)
+        assert paused is not None
+        assert paused.state == RunState.WAITING_APPROVAL
+
+        # 4. Resume run via POST /api/runs/<run_id>/resume
+        req_resume = urllib.request.Request(
+            f"{base_url}/api/runs/{run_id}/resume",
+            data=json.dumps({"approve": True}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req_resume) as resp:
+            assert resp.status == 202
+
+        for _ in range(20):
+            r = store.get_run(run_id)
+            if r and r.state == RunState.DONE:
+                break
+            time.sleep(0.02)
+
+        finished = store.get_run(run_id)
+        assert finished is not None
+        assert finished.state == RunState.DONE
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_dashboard_static_assets_and_path_traversal_guard(sample_dashboard_env):
-    base_url, _ = sample_dashboard_env
+    base_url, _, _ = sample_dashboard_env
 
     # Root HTML
     with urllib.request.urlopen(f"{base_url}/") as resp:
         assert resp.status == 200
         html = resp.read().decode("utf-8")
     for required_id in (
+        'id="mission-form"',
+        'id="mission-input"',
         'id="run-list"',
         'id="fsm-pipeline"',
         'id="plan-scope"',
         'id="attempts-table"',
         'id="diff-viewer"',
+        'id="approval-banner"',
     ):
         assert required_id in html
 
-    # CSS
+    # CSS: verify light-tone palette, soft curves, and tabular-nums
     with urllib.request.urlopen(f"{base_url}/static/styles.css") as resp:
         assert resp.status == 200
         css = resp.read().decode("utf-8")
-    assert "#0d1117" in css
-    assert "#161b22" in css
-    assert "#30363d" in css
+    assert "#f8fafc" in css or "#f6f8fa" in css
+    assert "#ffffff" in css
+    assert "16px" in css
     assert "tabular-nums" in css
 
     # JS

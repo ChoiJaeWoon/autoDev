@@ -3,14 +3,25 @@
 import json
 import mimetypes
 import re
+import shlex
+import socketserver
 import subprocess
+import sys
+import threading
+import uuid
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from agent_forge.config import ForgeConfig
+from agent_forge.core.engine import ForgeEngine
+from agent_forge.core.state import HaltReason, RunRecord, RunState
 from agent_forge.core.store import StateStore
+from agent_forge.llm.client import OpenAICompatibleClient
+from agent_forge.verifiers.test_runner import SubprocessTestVerifier
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -39,17 +50,43 @@ def _resolve_commit_diff(repo_root: str, commit_sha: str | None) -> str:
     return ""
 
 
-class DashboardHTTPServer(ThreadingHTTPServer):
-    """ThreadingHTTPServer holding reference to the SQLite checkpoint store."""
+def _default_test_cmd_for_repo(repo_path: Path) -> str:
+    """Infer the default test command for a target repository."""
+    if (repo_path / "pom.xml").is_file() and not (repo_path / "pyproject.toml").is_file():
+        return "mvn test -q"
+    return f"{sys.executable} -m pytest -q"
 
-    def __init__(self, server_address: tuple[str, int], RequestHandlerClass: Any, db_path: Path):
+
+def _default_engine_factory(db_path: Path, test_cmd: str | None = None) -> ForgeEngine:
+    config = ForgeConfig()
+    store = StateStore(db_path)
+    llm = OpenAICompatibleClient(config)
+    effective_cmd = test_cmd or f"{sys.executable} -m pytest -q"
+    verifier = SubprocessTestVerifier(
+        shlex.split(effective_cmd), timeout_seconds=config.test_timeout_seconds
+    )
+    return ForgeEngine(config, store, llm, verifier)
+
+
+class DashboardHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer holding reference to the SQLite checkpoint store and worker lock."""
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        RequestHandlerClass: Any,
+        db_path: Path,
+        workspace_root: Path | None = None,
+        engine_factory: Callable[[Path, str | None], Any] | None = None,
+    ):
         self.db_path = Path(db_path)
+        self.workspace_root = (workspace_root or Path.cwd()).resolve()
+        self.engine_factory = engine_factory or _default_engine_factory
+        self.worker_lock = threading.Lock()
         super().__init__(server_address, RequestHandlerClass)
 
     def server_bind(self) -> None:
         # Avoid HTTPServer.server_bind()'s socket.getfqdn() reverse-DNS stall on macOS
-        import socketserver
-
         socketserver.TCPServer.server_bind(self)
         host, port = self.server_address[:2]
         self.server_name = str(host)
@@ -57,7 +94,7 @@ class DashboardHTTPServer(ThreadingHTTPServer):
 
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
-    """Handles JSON API requests and static inspector frontend files."""
+    """Handles JSON API requests (GET/POST) and static inspector frontend files."""
 
     server: DashboardHTTPServer
 
@@ -73,6 +110,20 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_json_body(self) -> dict[str, Any] | None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return None
+        if length <= 0 or length > 262144:
+            return {}
+        raw = self.rfile.read(length)
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
 
     def _serve_static_file(self, rel_path: str) -> None:
         static_root = STATIC_DIR.resolve()
@@ -120,6 +171,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {
                     "db_path": str(self.server.db_path),
+                    "worker_busy": self.server.worker_lock.locked(),
                     "runs": summaries,
                 },
             )
@@ -127,6 +179,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
         if raw_path.startswith("/api/runs/"):
             run_id = raw_path.removeprefix("/api/runs/").strip("/")
+            if not run_id or "/" in run_id:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid run path"})
+                return
             store = StateStore(self.server.db_path)
             run = store.get_run(run_id)
             if run is None:
@@ -160,12 +215,165 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
 
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        raw_path = unquote(parsed.path)
+        body = self._read_json_body()
+        if body is None:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON request body"})
+            return
+
+        if raw_path == "/api/runs":
+            self._handle_post_start_run(body)
+            return
+
+        if raw_path.startswith("/api/runs/") and raw_path.endswith("/resume"):
+            middle = raw_path.removeprefix("/api/runs/").removesuffix("/resume").strip("/")
+            if not middle or "/" in middle:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid run resume path"})
+                return
+            self._handle_post_resume_run(middle, body)
+            return
+
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
+
+    def _handle_post_start_run(self, body: dict[str, Any]) -> None:
+        task = str(body.get("task") or "").strip()
+        if not task:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "Task description must not be empty."},
+            )
+            return
+
+        raw_repo = str(body.get("repo_root") or "targets/python-mini-calc").strip()
+        candidate_repo = (
+            Path(raw_repo).resolve()
+            if Path(raw_repo).is_absolute()
+            else (self.server.workspace_root / raw_repo).resolve()
+        )
+        if (
+            not candidate_repo.is_relative_to(self.server.workspace_root)
+            or not candidate_repo.is_dir()
+        ):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "error": f"Target repository '{raw_repo}' must be an existing directory inside workspace."
+                },
+            )
+            return
+
+        auto_approve = bool(body.get("auto_approve", True))
+        custom_test_cmd = str(body.get("test_cmd") or "").strip() or _default_test_cmd_for_repo(
+            candidate_repo
+        )
+
+        if not self.server.worker_lock.acquire(blocking=False):
+            self._send_json(
+                HTTPStatus.CONFLICT,
+                {"error": "Another Agent Forge run is currently executing. Please wait."},
+            )
+            return
+
+        run_id = f"run-{uuid.uuid4().hex[:8]}"
+        store = StateStore(self.server.db_path)
+        initial_record = RunRecord(
+            run_id=run_id,
+            task_description=task,
+            repo_root=str(candidate_repo),
+            branch_name=f"forge/{run_id}",
+            state=RunState.INIT,
+        )
+        store.save_run(initial_record)
+
+        def _worker() -> None:
+            try:
+                engine = self.server.engine_factory(self.server.db_path, custom_test_cmd)
+                engine.start_run(
+                    task,
+                    repo_root=candidate_repo,
+                    auto_approve=auto_approve,
+                    run_id=run_id,
+                )
+            except Exception as exc:
+                err_store = StateStore(self.server.db_path)
+                rec = err_store.get_run(run_id) or initial_record
+                rec.state = RunState.HALT
+                rec.halt_reason = HaltReason.POLICY_VIOLATION
+                rec.last_error_output = f"Execution error: {exc}"
+                err_store.save_run(rec)
+            finally:
+                self.server.worker_lock.release()
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            {"run_id": run_id, "state": RunState.INIT.value},
+        )
+
+    def _handle_post_resume_run(self, run_id: str, body: dict[str, Any]) -> None:
+        store = StateStore(self.server.db_path)
+        run = store.get_run(run_id)
+        if run is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Run '{run_id}' not found"})
+            return
+        if run.state != RunState.WAITING_APPROVAL:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": f"Run '{run_id}' is in state {run.state.value}, not WAITING_APPROVAL"},
+            )
+            return
+
+        if not self.server.worker_lock.acquire(blocking=False):
+            self._send_json(
+                HTTPStatus.CONFLICT,
+                {"error": "Another Agent Forge run is currently executing. Please wait."},
+            )
+            return
+
+        approve = bool(body.get("approve", True))
+        custom_test_cmd = str(body.get("test_cmd") or "").strip() or _default_test_cmd_for_repo(
+            Path(run.repo_root)
+        )
+
+        def _resume_worker() -> None:
+            try:
+                engine = self.server.engine_factory(self.server.db_path, custom_test_cmd)
+                engine.resume_run(run_id, approve=approve)
+            except Exception as exc:
+                err_store = StateStore(self.server.db_path)
+                rec = err_store.get_run(run_id)
+                if rec is not None:
+                    rec.state = RunState.HALT
+                    rec.halt_reason = HaltReason.POLICY_VIOLATION
+                    rec.last_error_output = f"Resume error: {exc}"
+                    err_store.save_run(rec)
+            finally:
+                self.server.worker_lock.release()
+
+        threading.Thread(target=_resume_worker, daemon=True).start()
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            {"run_id": run_id, "resuming": True, "approve": approve},
+        )
+
 
 def create_dashboard_server(
-    db_path: Path, host: str = "127.0.0.1", port: int = 8765
+    db_path: Path,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    workspace_root: Path | None = None,
+    engine_factory: Callable[[Path, str | None], Any] | None = None,
 ) -> DashboardHTTPServer:
     """Create a configured DashboardHTTPServer instance without blocking."""
-    return DashboardHTTPServer((host, port), DashboardRequestHandler, db_path=db_path)
+    return DashboardHTTPServer(
+        (host, port),
+        DashboardRequestHandler,
+        db_path=db_path,
+        workspace_root=workspace_root,
+        engine_factory=engine_factory,
+    )
 
 
 def start_dashboard_server(
