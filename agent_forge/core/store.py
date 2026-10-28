@@ -51,11 +51,20 @@ class StateStore:
                     prompt_tokens INTEGER NOT NULL DEFAULT 0,
                     completion_tokens INTEGER NOT NULL DEFAULT 0,
                     cost_usd REAL NOT NULL DEFAULT 0.0,
+                    artifacts_json TEXT NOT NULL DEFAULT '{}',
                     PRIMARY KEY (run_id, attempt_number),
                     FOREIGN KEY (run_id) REFERENCES runs(run_id)
                 );
                 """
             )
+            cols = [
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(attempts)").fetchall()
+            ]
+            if "artifacts_json" not in cols:
+                conn.execute(
+                    "ALTER TABLE attempts ADD COLUMN artifacts_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def save_run(self, run: RunRecord) -> None:
         plan_json = run.plan.model_dump_json() if run.plan is not None else None
@@ -105,13 +114,14 @@ class StateStore:
         test_passed_int = (
             None if attempt.test_passed is None else (1 if attempt.test_passed else 0)
         )
+        artifacts_json = json.dumps(attempt.artifacts or {}, ensure_ascii=False)
         conn.execute(
             """
             INSERT INTO attempts (
                 run_id, attempt_number, phase, tree_hash, commit_sha,
                 patch_summary, test_passed, exit_code, error_fingerprint,
-                prompt_tokens, completion_tokens, cost_usd
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                prompt_tokens, completion_tokens, cost_usd, artifacts_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, attempt_number) DO UPDATE SET
                 phase = excluded.phase,
                 tree_hash = excluded.tree_hash,
@@ -122,7 +132,8 @@ class StateStore:
                 error_fingerprint = excluded.error_fingerprint,
                 prompt_tokens = excluded.prompt_tokens,
                 completion_tokens = excluded.completion_tokens,
-                cost_usd = excluded.cost_usd
+                cost_usd = excluded.cost_usd,
+                artifacts_json = excluded.artifacts_json
             """,
             (
                 run_id,
@@ -137,6 +148,7 @@ class StateStore:
                 attempt.prompt_tokens,
                 attempt.completion_tokens,
                 attempt.cost_usd,
+                artifacts_json,
             ),
         )
 
@@ -164,6 +176,7 @@ class StateStore:
                 prompt_tokens=ar["prompt_tokens"],
                 completion_tokens=ar["completion_tokens"],
                 cost_usd=ar["cost_usd"],
+                artifacts=json.loads(ar["artifacts_json"] or "{}"),
             )
             for ar in attempt_rows
         ]

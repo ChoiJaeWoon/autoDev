@@ -18,7 +18,13 @@ def test_repo_map_extracts_python_and_java_jsp_symbols(tmp_path: Path):
         encoding="utf-8",
     )
     (tmp_path / "src" / "boardList.jsp").write_text(
-        '<%@ page contentType="text/html;charset=UTF-8" %>\n<form action="/board/search"></form>\n',
+        '<%@ page contentType="text/html;charset=UTF-8" %>\n'
+        '<form action="/board/search"></form>\n'
+        '<table class="board-table"><thead><tr><th>번호</th><th>제목</th></tr></thead></table>\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "board.css").write_text(
+        ".board-container { width: 960px; }\n.board-table { border-collapse: collapse; }\n",
         encoding="utf-8",
     )
     repo_map = build_repo_map(tmp_path)
@@ -28,6 +34,9 @@ def test_repo_map_extracts_python_and_java_jsp_symbols(tmp_path: Path):
     assert "class BoardService" in repo_map
     assert "findPosts" in repo_map
     assert "src/boardList.jsp" in repo_map
+    assert "<th>: 번호, 제목" in repo_map
+    assert "src/board.css" in repo_map
+    assert ".board-container" in repo_map
 
 
 def test_file_guard_blocks_path_traversal_and_locks_tests_in_implement(tmp_path: Path):

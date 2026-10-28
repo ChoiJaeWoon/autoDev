@@ -51,6 +51,7 @@ class AttemptRecord(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float = 0.0
+    artifacts: dict[str, str] = Field(default_factory=dict)
 
 
 class RunRecord(BaseModel):

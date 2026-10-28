@@ -179,6 +179,8 @@ class ForgeEngine:
         run.baseline_commit_sha = git_ops.create_snapshot(
             f"chore(forge): lock test suite for {run.run_id}"
         )
+        if hasattr(self.verifier, "capture_baseline"):
+            self.verifier.capture_baseline(repo_root, run.run_id)
         run.state = RunState.IMPLEMENT
         self.store.save_run(run)
 
@@ -326,6 +328,7 @@ class ForgeEngine:
                 prompt_tokens=impl_resp.prompt_tokens,
                 completion_tokens=impl_resp.completion_tokens,
                 cost_usd=impl_resp.cost_usd,
+                artifacts=dict(verify_res.artifacts),
             )
             prior_attempts = list(run.attempts)
             run.attempts.append(attempt)
