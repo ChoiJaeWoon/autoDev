@@ -19,6 +19,7 @@ from agent_forge.harness.file_guard import FileGuard, GuardViolation
 from agent_forge.harness.loop_guard import LoopAction, evaluate_loop_guard
 from agent_forge.harness.patcher import PatchError, apply_patch_blocks, parse_patch_blocks
 from agent_forge.harness.repo_map import build_repo_map
+from agent_forge.integrations.github_ops import build_pr_draft_markdown
 from agent_forge.llm.client import LLMClient, LLMResponse
 from agent_forge.llm.prompts import (
     build_implement_prompt,
@@ -73,13 +74,15 @@ class ForgeEngine:
         repo_root: Path,
         auto_approve: bool = True,
         run_id: str | None = None,
+        issue_number: int | None = None,
+        issue_url: str = "",
     ) -> RunRecord:
         resolved_root = Path(repo_root).resolve()
         rid = run_id or f"run-{uuid.uuid4().hex[:8]}"
         branch_name = f"forge/{rid}"
 
         git_ops = GitOps(resolved_root)
-        base_sha = git_ops.create_task_branch(branch_name)
+        git_ops.create_task_branch(branch_name)
 
         run = RunRecord(
             run_id=rid,
@@ -87,17 +90,22 @@ class ForgeEngine:
             repo_root=str(resolved_root),
             branch_name=branch_name,
             state=RunState.INIT,
-            baseline_commit_sha=base_sha,
+            baseline_commit_sha=None,
+            issue_number=issue_number,
+            issue_url=issue_url,
         )
         self.store.save_run(run)
+        return self._execute_plan_phase(run, auto_approve=auto_approve)
 
-        # Transition INIT -> PLAN
+    def _execute_plan_phase(self, run: RunRecord, auto_approve: bool = True) -> RunRecord:
+        resolved_root = Path(run.repo_root).resolve()
+        # Transition INIT/HALT -> PLAN
         run.state = RunState.PLAN
         self.store.save_run(run)
 
         repo_map = build_repo_map(resolved_root)
         sys_p, usr_p = build_plan_prompt(
-            task_description, repo_map, self.config.max_files_changed
+            run.task_description, repo_map, self.config.max_files_changed
         )
         plan_resp = self.llm.complete(sys_p, usr_p)
         self._record_llm_usage(run, plan_resp)
@@ -142,6 +150,45 @@ class ForgeEngine:
             return self._execute_implement_verify_loop(run)
 
         return run
+
+    def retry_from_checkpoint(self, run_id: str, extra_attempts: int = 3) -> RunRecord:
+        """Resume a HALT run from its last verified checkpoint without redoing completed phases."""
+        run = self.store.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Run '{run_id}' not found in StateStore")
+        if run.state != RunState.HALT:
+            raise ValueError(
+                f"Run '{run_id}' is in state '{run.state.value}', not HALT"
+            )
+
+        self.config.max_attempts = max(
+            self.config.max_attempts, len(run.attempts) + max(1, extra_attempts)
+        )
+        run.halt_reason = HaltReason.NONE
+        run.last_error_output = ""
+
+        repo_root = Path(run.repo_root).resolve()
+        git_ops = GitOps(repo_root)
+        try:
+            git_ops.checkout_branch(run.branch_name)
+        except Exception:
+            git_ops.create_task_branch(run.branch_name)
+
+        # Checkpoint 2: Plan and Test Lock already completed -> resume directly at IMPLEMENT
+        if run.plan is not None and run.baseline_commit_sha is not None:
+            git_ops.rollback_to_snapshot(run.baseline_commit_sha)
+            run.state = RunState.IMPLEMENT
+            self.store.save_run(run)
+            return self._execute_implement_verify_loop(run)
+
+        # Checkpoint 1: Plan completed -> resume at WRITE_TEST
+        if run.plan is not None:
+            git_ops.discard_working_changes()
+            return self._continue_from_approval(run)
+
+        # Checkpoint 0: Plan failed -> re-run from PLAN
+        git_ops.discard_working_changes()
+        return self._execute_plan_phase(run, auto_approve=True)
 
     def _continue_from_approval(self, run: RunRecord) -> RunRecord:
         assert run.plan is not None
@@ -339,6 +386,7 @@ class ForgeEngine:
             if verify_res.passed:
                 run.state = RunState.DONE
                 run.last_error_output = ""
+                run.pr_draft_markdown = build_pr_draft_markdown(run)
                 self.store.save_run(run)
                 return run
 
