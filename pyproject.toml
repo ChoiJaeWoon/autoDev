@@ -27,6 +27,9 @@ forge = "agent_forge.cli:app"
 where = ["."]
 include = ["agent_forge*"]
 
+[tool.setuptools.package-data]
+"agent_forge.dashboard" = ["static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
