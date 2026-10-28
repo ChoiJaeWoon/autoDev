@@ -13,9 +13,9 @@ def _read_files_context(repo_root: Path, rel_paths: list[str]) -> str:
             continue
         if full_path.is_file():
             content = full_path.read_text(encoding="utf-8", errors="ignore")
-            sections.append(f"=== FILE: {rel_path} ===\n{content}\n")
+            sections.append(f"FILE: {rel_path}\n```\n{content}\n```\n")
         else:
-            sections.append(f"=== FILE: {rel_path} (NEW FILE) ===\n")
+            sections.append(f"FILE: {rel_path} (NEW FILE)\n")
     return "\n".join(sections)
 
 
@@ -40,7 +40,13 @@ def build_write_test_prompt(
 ) -> tuple[str, str]:
     system_prompt = (
         "You are Agent Forge's Test Author. "
-        "You may ONLY edit files in target_test_files using FILE / <<<<<<< SEARCH / ======= / >>>>>>> REPLACE blocks. "
+        "You may ONLY edit files in target_test_files using exact patch blocks in this format:\n"
+        "FILE: <relative_path>\n"
+        "<<<<<<< SEARCH\n"
+        "<exact existing lines>\n"
+        "=======\n"
+        "<replacement lines>\n"
+        ">>>>>>> REPLACE\n"
         "Never delete existing assertions or add skip annotations. If existing tests are sufficient, output NO_CHANGES."
     )
     files_ctx = _read_files_context(
@@ -65,7 +71,13 @@ def build_implement_prompt(
     system_prompt = (
         "You are Agent Forge's Implementation Engine. "
         "Test files are now LOCKED (Read-Only). You may ONLY edit files in target_source_files "
-        "using exact FILE / <<<<<<< SEARCH / ======= / >>>>>>> REPLACE blocks."
+        "using exact patch blocks in this format:\n"
+        "FILE: <relative_path>\n"
+        "<<<<<<< SEARCH\n"
+        "<exact existing lines>\n"
+        "=======\n"
+        "<replacement lines>\n"
+        ">>>>>>> REPLACE"
     )
     files_ctx = _read_files_context(
         repo_root, plan.target_source_files + plan.target_test_files

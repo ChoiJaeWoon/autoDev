@@ -75,3 +75,18 @@ def test_ambiguous_search_block_rejected_without_modifying_file(tmp_path: Path):
         apply_patch_blocks(blocks, guard, RunState.IMPLEMENT)
 
     assert target.read_text(encoding="utf-8") == original
+
+
+def test_parse_patch_blocks_strips_banner_and_markdown_decorators():
+    llm_output = (
+        "=== FILE: src/calculator.py ===\n"
+        "<<<<<<< SEARCH\n"
+        "    return a + b\n"
+        "=======\n"
+        "    return a - b\n"
+        ">>>>>>> REPLACE\n"
+    )
+    blocks = parse_patch_blocks(llm_output)
+    assert len(blocks) == 1
+    assert blocks[0].file_path == "src/calculator.py"
+
