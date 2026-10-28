@@ -23,6 +23,16 @@ class GitOps:
     def __init__(self, repo_root: Path):
         self.repo_root = Path(repo_root).resolve()
 
+    def _purge_transient_caches(self) -> None:
+        """Remove transient test/bytecode cache directories so they never pollute diffs or tree hashes."""
+        for cache_dir_name in (".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache"):
+            for p in self.repo_root.rglob(cache_dir_name):
+                if ".git" not in p.parts and p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+        for pyc in self.repo_root.rglob("*.py[cod]"):
+            if ".git" not in pyc.parts and pyc.is_file():
+                pyc.unlink(missing_ok=True)
+
     def _run_git(
         self, args: list[str], env: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
@@ -44,6 +54,7 @@ class GitOps:
 
     def get_working_tree_hash(self) -> str:
         """Compute deterministic git tree SHA of current working tree + untracked files without mutating index."""
+        self._purge_transient_caches()
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_index = Path(tmpdir) / "index"
             git_index = self.repo_root / ".git" / "index"
@@ -56,6 +67,7 @@ class GitOps:
 
     def create_snapshot(self, message: str) -> str:
         """Stage all changes and create a snapshot commit, returning the commit SHA."""
+        self._purge_transient_caches()
         status = self._run_git(["status", "--porcelain"]).stdout.strip()
         if not status:
             return self.get_head_commit()
@@ -65,6 +77,7 @@ class GitOps:
 
     def get_diff_stats(self, base_ref: str = "HEAD") -> DiffStats:
         """Compute changed files and line counts against base_ref, including untracked files."""
+        self._purge_transient_caches()
         numstat_out = self._run_git(["diff", "--numstat", base_ref]).stdout.strip()
         changed_files: list[str] = []
         added_lines = 0
