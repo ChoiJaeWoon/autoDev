@@ -1,11 +1,33 @@
 """Configuration models for Agent Forge."""
 
 import os
+from pathlib import Path
 from pydantic import BaseModel, Field
+
+
+def _load_dotenv_if_present() -> None:
+    """Load key=value pairs from .env in cwd or project root if not already in os.environ."""
+    for candidate in (Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"):
+        if candidate.is_file():
+            for raw_line in candidate.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export ") :].strip()
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip().strip("'").strip('"')
+                if key and key not in os.environ:
+                    os.environ[key] = val
 
 
 class ForgeConfig(BaseModel):
     """Safety, budget, retry, and LLM configuration for Agent Forge."""
+
+    def __init__(self, **data):
+        _load_dotenv_if_present()
+        super().__init__(**data)
 
     max_attempts: int = 5
     max_files_changed: int = 5
