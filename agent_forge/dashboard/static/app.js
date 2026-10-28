@@ -17,6 +17,7 @@
   let selectedRunId = null;
   let currentRunDetail = null;
   let autoRefreshTimer = null;
+  let fastPollTimer = null;
 
   const el = (id) => document.getElementById(id);
 
@@ -54,16 +55,40 @@
     return true;
   }
 
+  function showFeedback(message, isError = false) {
+    const fb = el("mission-feedback");
+    fb.classList.remove("hidden");
+    fb.textContent = message;
+    if (isError) {
+      fb.style.backgroundColor = "var(--status-fail-bg)";
+      fb.style.color = "var(--status-fail)";
+      fb.style.borderColor = "var(--status-fail-border)";
+    } else {
+      fb.style.backgroundColor = "var(--accent-blue-bg)";
+      fb.style.color = "var(--accent-blue)";
+      fb.style.borderColor = "var(--accent-blue-border)";
+    }
+  }
+
+  function ensureFastPolling(shouldPoll) {
+    if (shouldPoll && !fastPollTimer) {
+      fastPollTimer = setInterval(fetchRuns, 1500);
+    } else if (!shouldPoll && fastPollTimer) {
+      clearInterval(fastPollTimer);
+      fastPollTimer = null;
+    }
+  }
+
   function renderRunList() {
     const listContainer = el("run-list");
     listContainer.replaceChildren();
 
     const filtered = allRuns.filter((r) => matchesFilter(r, currentFilter));
-    el("run-count-label").textContent = `${allRuns.length} RUNS`;
+    el("run-count-label").textContent = `${allRuns.length} Runs`;
 
     if (filtered.length === 0) {
       const emptyItem = createEl("div", "run-item");
-      emptyItem.appendChild(createEl("div", "run-item-task", "No matching runs in checkpoint store."));
+      emptyItem.appendChild(createEl("div", "run-item-task", "조건에 해당하는 실행 기록이 없습니다."));
       listContainer.appendChild(emptyItem);
       return;
     }
@@ -80,8 +105,8 @@
       item.appendChild(createEl("div", "run-item-task", run.task_description));
 
       const meta = createEl("div", "run-item-meta");
-      meta.appendChild(createEl("span", "", `ATTEMPTS: ${run.attempt_count}`));
-      meta.appendChild(createEl("span", "", `${run.total_tokens} TOK / ${formatCost(run.total_cost_usd)}`));
+      meta.appendChild(createEl("span", "", `Attempts: ${run.attempt_count}`));
+      meta.appendChild(createEl("span", "", `${run.total_tokens} tok / ${formatCost(run.total_cost_usd)}`));
       item.appendChild(meta);
 
       item.addEventListener("click", () => {
@@ -146,7 +171,7 @@
     filesList.replaceChildren();
 
     if (!run.plan) {
-      subtasksList.appendChild(createEl("li", "", "No plan specification recorded."));
+      subtasksList.appendChild(createEl("li", "", "계획 단계(PLAN)가 아직 완료되지 않았거나 기록이 없습니다."));
       return;
     }
 
@@ -175,7 +200,7 @@
     viewer.replaceChildren();
 
     if (!rawDiff || !rawDiff.trim()) {
-      viewer.appendChild(createEl("span", "diff-line diff-meta", "No git commit patch recorded for this selection."));
+      viewer.appendChild(createEl("span", "diff-line diff-meta", "선택한 단계에 기록된 Git 커밋 패치가 없습니다."));
       return;
     }
 
@@ -205,8 +230,9 @@
 
     const baselineBtn = el("diff-btn-baseline");
     baselineBtn.onclick = () => {
+      Array.from(tbody.querySelectorAll(".attempt-row")).forEach((r) => r.classList.remove("selected"));
       renderUnifiedDiff(
-        `COMMIT PATCH INSPECTOR — TEST LOCK (${shortSha(run.baseline_commit_sha)})`,
+        `Commit Patch Inspector — Test Lock (${shortSha(run.baseline_commit_sha)})`,
         run.baseline_diff || ""
       );
     };
@@ -221,16 +247,19 @@
 
     if (attempts.length === 0) {
       const tr = createEl("tr");
-      const td = createEl("td", "meta-label", "No implementation attempts recorded.");
+      const td = createEl("td", "meta-label", "아직 기록된 구현 시도(Attempt)가 없습니다.");
       td.colSpan = 10;
       tr.appendChild(td);
       tbody.appendChild(tr);
-      renderUnifiedDiff("COMMIT PATCH INSPECTOR — TEST LOCK", run.baseline_diff || "");
+      renderUnifiedDiff("Commit Patch Inspector — Test Lock", run.baseline_diff || "");
       return;
     }
 
+    let lastRowEl = null;
+
     attempts.forEach((att) => {
       const tr = createEl("tr", "attempt-row");
+      lastRowEl = tr;
 
       tr.appendChild(createEl("td", "mono", `#${att.attempt_number}`));
       tr.appendChild(createEl("td", "mono", att.phase));
@@ -258,7 +287,7 @@
         tr.classList.add("selected");
         const diffText = attemptDiffs[String(att.attempt_number)] || "";
         renderUnifiedDiff(
-          `COMMIT PATCH INSPECTOR — ATTEMPT #${att.attempt_number} (${shortSha(att.commit_sha, 7)})`,
+          `Commit Patch Inspector — Attempt #${att.attempt_number} (${shortSha(att.commit_sha, 7)})`,
           diffText
         );
       };
@@ -266,16 +295,19 @@
       tr.addEventListener("click", selectAttemptDiff);
       tbody.appendChild(tr);
 
-      const quickBtn = createEl("button", "btn-micro", `ATTEMPT #${att.attempt_number}`);
+      const quickBtn = createEl("button", "btn-micro", `Attempt #${att.attempt_number}`);
       quickBtn.type = "button";
       quickBtn.addEventListener("click", selectAttemptDiff);
       btnGroup.appendChild(quickBtn);
     });
 
     const lastAtt = attempts[attempts.length - 1];
+    if (lastRowEl) {
+      lastRowEl.classList.add("selected");
+    }
     const lastDiff = attemptDiffs[String(lastAtt.attempt_number)] || "";
     renderUnifiedDiff(
-      `COMMIT PATCH INSPECTOR — ATTEMPT #${lastAtt.attempt_number} (${shortSha(lastAtt.commit_sha, 7)})`,
+      `Commit Patch Inspector — Attempt #${lastAtt.attempt_number} (${shortSha(lastAtt.commit_sha, 7)})`,
       lastDiff
     );
   }
@@ -285,7 +317,7 @@
     refList.replaceChildren();
     const notes = run.reflection_notes || [];
     if (notes.length === 0) {
-      refList.appendChild(createEl("li", "meta-label", "No loop-guard reflections triggered."));
+      refList.appendChild(createEl("li", "meta-label", "루프 가드 반성 노트(Reflection)가 발생하지 않았습니다."));
     } else {
       notes.forEach((note) => {
         refList.appendChild(createEl("li", "reflection-item", note));
@@ -295,13 +327,20 @@
     const errBox = el("error-output");
     errBox.textContent = run.last_error_output && run.last_error_output.trim()
       ? run.last_error_output
-      : "No error output recorded (verification gate clean).";
+      : "오류 출력이 없습니다 (검증 게이트 통과).";
   }
 
   function renderRunDetail(run) {
     currentRunDetail = run;
     el("inspector-empty").classList.add("hidden");
     el("inspector-content").classList.remove("hidden");
+
+    const approvalBanner = el("approval-banner");
+    if (run.state === "WAITING_APPROVAL") {
+      approvalBanner.classList.remove("hidden");
+    } else {
+      approvalBanner.classList.add("hidden");
+    }
 
     el("detail-run-id").textContent = run.run_id;
     const stateBadge = el("detail-state-badge");
@@ -351,6 +390,24 @@
         el("db-path-label").textContent = data.db_path;
       }
 
+      const workerPill = el("worker-status-pill");
+      const submitBtn = el("mission-submit-btn");
+      if (data.worker_busy) {
+        workerPill.className = "badge badge-active";
+        workerPill.textContent = "RUNNING";
+        submitBtn.disabled = true;
+      } else {
+        workerPill.className = "badge badge-idle";
+        workerPill.textContent = "IDLE";
+        submitBtn.disabled = false;
+      }
+
+      const anyActiveRun = Boolean(
+        data.worker_busy ||
+        allRuns.some((r) => r.state !== "DONE" && r.state !== "HALT" && r.state !== "WAITING_APPROVAL")
+      );
+      ensureFastPolling(anyActiveRun);
+
       if (!selectedRunId && allRuns.length > 0) {
         selectedRunId = allRuns[0].run_id;
       }
@@ -363,7 +420,85 @@
     }
   }
 
+  async function submitNewMission(evt) {
+    evt.preventDefault();
+    const input = el("mission-input");
+    const taskText = input.value.trim();
+    if (!taskText) return;
+
+    const repoRoot = el("mission-repo").value;
+    const autoApprove = el("mission-approval").value === "auto";
+    const submitBtn = el("mission-submit-btn");
+
+    submitBtn.disabled = true;
+    showFeedback("미션을 디스패치하는 중입니다...", false);
+
+    try {
+      const resp = await fetch("/api/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          task: taskText,
+          repo_root: repoRoot,
+          auto_approve: autoApprove,
+        }),
+      });
+      const payload = await resp.json();
+      if (!resp.ok) {
+        showFeedback(payload.error || "미션 실행 요청에 실패했습니다.", true);
+        submitBtn.disabled = false;
+        return;
+      }
+
+      input.value = "";
+      selectedRunId = payload.run_id;
+      showFeedback(`Run ${payload.run_id} 실행이 시작되었습니다.`, false);
+      ensureFastPolling(true);
+      await fetchRuns();
+    } catch (_err) {
+      showFeedback("서버 통신 중 오류가 발생했습니다.", true);
+      submitBtn.disabled = false;
+    }
+  }
+
+  async function sendApprovalDecision(approve) {
+    if (!selectedRunId) return;
+    try {
+      const resp = await fetch(`/api/runs/${encodeURIComponent(selectedRunId)}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approve }),
+      });
+      const payload = await resp.json();
+      if (!resp.ok) {
+        showFeedback(payload.error || "승인/반려 처리에 실패했습니다.", true);
+        return;
+      }
+      showFeedback(
+        approve
+          ? `Run ${selectedRunId} 계획을 승인하여 실행을 재개합니다.`
+          : `Run ${selectedRunId} 계획을 반려하여 중단했습니다.`,
+        !approve
+      );
+      ensureFastPolling(true);
+      await fetchRuns();
+    } catch (_err) {
+      showFeedback("서버 통신 중 오류가 발생했습니다.", true);
+    }
+  }
+
   function initControls() {
+    el("mission-form").addEventListener("submit", submitNewMission);
+    el("mission-input").addEventListener("keydown", (evt) => {
+      if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
+        evt.preventDefault();
+        el("mission-form").requestSubmit();
+      }
+    });
+
+    el("approve-run-btn").addEventListener("click", () => sendApprovalDecision(true));
+    el("reject-run-btn").addEventListener("click", () => sendApprovalDecision(false));
+
     el("refresh-btn").addEventListener("click", () => {
       fetchRuns();
     });
@@ -374,11 +509,11 @@
         clearInterval(autoRefreshTimer);
         autoRefreshTimer = null;
         autoBtn.classList.remove("active");
-        autoBtn.textContent = "AUTO-REFRESH: OFF";
+        autoBtn.textContent = "Auto-Refresh: Off";
       } else {
         autoRefreshTimer = setInterval(fetchRuns, 3000);
         autoBtn.classList.add("active");
-        autoBtn.textContent = "AUTO-REFRESH: 3S";
+        autoBtn.textContent = "Auto-Refresh: 3s";
       }
     });
 
