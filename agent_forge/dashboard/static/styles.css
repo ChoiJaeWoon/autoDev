@@ -979,3 +979,51 @@ code, pre, .mono {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Stage 3: GitHub Issue Import, Checkpoint Retry & PR Draft Panel */
+.issue-import-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.issue-number-input {
+  width: 140px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-inset);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.issue-number-input:focus {
+  background-color: var(--bg-surface);
+  border-color: var(--accent-blue);
+}
+
+.retry-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 24px;
+  background-color: #fff1f2;
+  border-color: var(--status-fail-border);
+}
+
+.pr-draft-viewer {
+  background-color: var(--bg-inset);
+  color: var(--text-primary);
+  padding: 20px 24px;
+  font-size: 13px;
+  line-height: 1.65;
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

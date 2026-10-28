@@ -18,6 +18,8 @@
   let currentRunDetail = null;
   let autoRefreshTimer = null;
   let fastPollTimer = null;
+  let pendingIssueNumber = null;
+  let pendingIssueUrl = "";
 
   const el = (id) => document.getElementById(id);
 
@@ -368,6 +370,34 @@
       approvalBanner.classList.add("hidden");
     }
 
+    const retryBanner = el("halt-retry-banner");
+    if (retryBanner) {
+      if (run.state === "HALT") {
+        retryBanner.classList.remove("hidden");
+      } else {
+        retryBanner.classList.add("hidden");
+      }
+    }
+
+    const prPanel = el("pr-draft-panel");
+    if (prPanel) {
+      if (run.state === "DONE") {
+        prPanel.classList.remove("hidden");
+        el("pr-draft-viewer").textContent =
+          (run.pr_draft_markdown && run.pr_draft_markdown.trim()) ||
+          "PR 초안이 생성되지 않았습니다.";
+        const prLink = el("pr-published-link");
+        if (run.pr_url && run.pr_url.trim()) {
+          prLink.href = run.pr_url;
+          prLink.classList.remove("hidden");
+        } else {
+          prLink.classList.add("hidden");
+        }
+      } else {
+        prPanel.classList.add("hidden");
+      }
+    }
+
     el("detail-run-id").textContent = run.run_id;
     const stateBadge = el("detail-state-badge");
     stateBadge.className = stateBadgeClass(run.state);
@@ -467,6 +497,8 @@
           task: taskText,
           repo_root: repoRoot,
           auto_approve: autoApprove,
+          issue_number: pendingIssueNumber,
+          issue_url: pendingIssueUrl,
         }),
       });
       const payload = await resp.json();
@@ -477,6 +509,10 @@
       }
 
       input.value = "";
+      pendingIssueNumber = null;
+      pendingIssueUrl = "";
+      const issueBadge = el("issue-linked-badge");
+      if (issueBadge) issueBadge.classList.add("hidden");
       selectedRunId = payload.run_id;
       showFeedback(`Run ${payload.run_id} 실행이 시작되었습니다.`, false);
       ensureFastPolling(true);
@@ -484,6 +520,104 @@
     } catch (_err) {
       showFeedback("서버 통신 중 오류가 발생했습니다.", true);
       submitBtn.disabled = false;
+    }
+  }
+
+  async function importGithubIssue() {
+    const numInput = el("issue-import-input");
+    const rawNum = (numInput.value || "").trim();
+    if (!rawNum) {
+      showFeedback("가져올 GitHub 이슈 번호를 입력하세요.", true);
+      return;
+    }
+    const importBtn = el("issue-import-btn");
+    importBtn.disabled = true;
+    showFeedback(`GitHub Issue #${rawNum} 정보를 불러오는 중입니다...`, false);
+    try {
+      const resp = await fetch(`/api/github/issues/${encodeURIComponent(rawNum)}`);
+      const payload = await resp.json();
+      if (!resp.ok) {
+        showFeedback(payload.error || `Issue #${rawNum} 조회에 실패했습니다.`, true);
+        return;
+      }
+      const input = el("mission-input");
+      input.value = payload.task_prompt || `[GitHub Issue #${payload.number}] ${payload.title}`;
+      input.dispatchEvent(new Event("input"));
+      pendingIssueNumber = payload.number;
+      pendingIssueUrl = payload.html_url || "";
+      const badge = el("issue-linked-badge");
+      if (badge) {
+        badge.textContent = `Issue #${payload.number} Linked`;
+        badge.classList.remove("hidden");
+      }
+      showFeedback(`GitHub Issue #${payload.number} (${payload.title}) 내용을 불러왔습니다.`, false);
+    } catch (_err) {
+      showFeedback("GitHub 이슈 조회 중 네트워크 오류가 발생했습니다.", true);
+    } finally {
+      importBtn.disabled = false;
+    }
+  }
+
+  async function retryFromCheckpoint() {
+    if (!selectedRunId) return;
+    const retryBtn = el("retry-run-btn");
+    if (retryBtn) retryBtn.disabled = true;
+    try {
+      const resp = await fetch(`/api/runs/${encodeURIComponent(selectedRunId)}/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ extra_attempts: 3 }),
+      });
+      const payload = await resp.json();
+      if (!resp.ok) {
+        showFeedback(payload.error || "체크포인트 재실행 요청에 실패했습니다.", true);
+        return;
+      }
+      showFeedback(
+        `Run ${selectedRunId} 체크포인트(Baseline Test Lock)부터 재실행을 시작합니다.`,
+        false
+      );
+      ensureFastPolling(true);
+      await fetchRuns();
+    } catch (_err) {
+      showFeedback("체크포인트 재실행 요청 중 오류가 발생했습니다.", true);
+    } finally {
+      if (retryBtn) retryBtn.disabled = false;
+    }
+  }
+
+  async function copyPrDraftMarkdown() {
+    if (!currentRunDetail || !currentRunDetail.pr_draft_markdown) return;
+    try {
+      await navigator.clipboard.writeText(currentRunDetail.pr_draft_markdown);
+      showFeedback("PR 초안 마크다운이 클립보드에 복사되었습니다.", false);
+    } catch (_err) {
+      showFeedback("클립보드 복사에 실패했습니다.", true);
+    }
+  }
+
+  async function publishPrToGithub() {
+    if (!selectedRunId) return;
+    const pubBtn = el("publish-pr-btn");
+    if (pubBtn) pubBtn.disabled = true;
+    showFeedback("GitHub에 Draft PR을 발행하는 중입니다...", false);
+    try {
+      const resp = await fetch(`/api/runs/${encodeURIComponent(selectedRunId)}/pr`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ publish: true, draft: true }),
+      });
+      const payload = await resp.json();
+      if (!resp.ok) {
+        showFeedback(payload.error || "GitHub PR 발행에 실패했습니다.", true);
+        return;
+      }
+      showFeedback(`GitHub Draft PR이 생성되었습니다: ${payload.pr_url}`, false);
+      await fetchRunDetail(selectedRunId);
+    } catch (_err) {
+      showFeedback("GitHub PR 발행 중 네트워크 오류가 발생했습니다.", true);
+    } finally {
+      if (pubBtn) pubBtn.disabled = false;
     }
   }
 
@@ -532,6 +666,15 @@
 
     el("approve-run-btn").addEventListener("click", () => sendApprovalDecision(true));
     el("reject-run-btn").addEventListener("click", () => sendApprovalDecision(false));
+
+    const importBtn = el("issue-import-btn");
+    if (importBtn) importBtn.addEventListener("click", importGithubIssue);
+    const retryBtn = el("retry-run-btn");
+    if (retryBtn) retryBtn.addEventListener("click", retryFromCheckpoint);
+    const copyPrBtn = el("copy-pr-btn");
+    if (copyPrBtn) copyPrBtn.addEventListener("click", copyPrDraftMarkdown);
+    const publishPrBtn = el("publish-pr-btn");
+    if (publishPrBtn) publishPrBtn.addEventListener("click", publishPrToGithub);
 
     el("refresh-btn").addEventListener("click", () => {
       fetchRuns();
