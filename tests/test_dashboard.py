@@ -386,6 +386,14 @@ def test_dashboard_static_assets_and_path_traversal_guard(sample_dashboard_env):
         'id="attempts-table"',
         'id="diff-viewer"',
         'id="approval-banner"',
+        'id="halt-retry-banner"',
+        'id="retry-run-btn"',
+        'id="issue-import-input"',
+        'id="issue-import-btn"',
+        'id="pr-draft-panel"',
+        'id="pr-draft-viewer"',
+        'id="copy-pr-btn"',
+        'id="publish-pr-btn"',
         'id="visual-regression-panel"',
         'id="vis-img-baseline"',
         'id="vis-img-after"',
@@ -456,5 +464,162 @@ def test_cli_ui_command_invokes_dashboard_server(monkeypatch, tmp_path: Path):
     assert called["host"] == "127.0.0.1"
     assert called["db_path"] == db_file
     assert "http://127.0.0.1:9123" in result.output
+
+
+def test_dashboard_stage3_issue_import_retry_and_pr_endpoints(
+    monkeypatch, tmp_path: Path
+):
+    import time
+    import agent_forge.dashboard.server as server_module
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "init")
+
+    db_path = tmp_path / "state.db"
+    store = StateStore(db_path)
+
+    halted = RunRecord(
+        run_id="run-halt01",
+        task_description="[GitHub Issue #7] 거듭제곱 함수 추가",
+        repo_root=str(repo),
+        branch_name="forge/run-halt01",
+        state=RunState.HALT,
+        halt_reason=HaltReason.MAX_ATTEMPTS,
+        issue_number=7,
+        issue_url="https://github.com/ChoiJaeWoon/autoDev/issues/7",
+    )
+    store.save_run(halted)
+
+    done_legacy = RunRecord(
+        run_id="run-done01",
+        task_description="레거시 완료 미션",
+        repo_root=str(repo),
+        branch_name="forge/run-done01",
+        state=RunState.DONE,
+        plan=PlanSpec(
+            subtasks=["함수 구현"],
+            target_source_files=["calc.py"],
+            target_test_files=[],
+        ),
+        total_tokens=500,
+        total_cost_usd=0.0004,
+    )
+    store.save_run(done_legacy)
+
+    class FakeStage3Engine:
+        def __init__(self, store_ref: StateStore):
+            self.store = store_ref
+
+        def retry_from_checkpoint(self, run_id: str, extra_attempts: int = 3) -> RunRecord:
+            rec = self.store.get_run(run_id)
+            assert rec is not None
+            rec.state = RunState.DONE
+            rec.halt_reason = HaltReason.NONE
+            rec.pr_draft_markdown = f"## 작업 요약\nCloses #{rec.issue_number}"
+            self.store.save_run(rec)
+            return rec
+
+    monkeypatch.setattr(
+        server_module,
+        "fetch_github_issue",
+        lambda slug, num, token=None: {
+            "number": int(num),
+            "title": "거듭제곱 연산 지원",
+            "body": "power(a, b) 함수를 추가해 주세요.",
+            "html_url": f"https://github.com/{slug}/issues/{num}",
+            "state": "open",
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "publish_github_pr",
+        lambda run, repo_slug, token, base_branch="main", draft=True: (
+            f"https://github.com/{repo_slug}/pull/99"
+        ),
+    )
+    monkeypatch.setattr(server_module, "resolve_github_token", lambda *_a: "ghp_mock")
+    monkeypatch.setattr(
+        server_module, "detect_github_repo", lambda *_a: "ChoiJaeWoon/autoDev"
+    )
+
+    server = create_dashboard_server(
+        db_path=db_path,
+        host="127.0.0.1",
+        port=0,
+        workspace_root=tmp_path,
+        engine_factory=lambda _db, _cmd: FakeStage3Engine(store),
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{port}"
+
+    try:
+        # 1. GET /api/github/issues/7
+        with urllib.request.urlopen(f"{base_url}/api/github/issues/7") as resp:
+            assert resp.status == 200
+            issue_data = json.loads(resp.read().decode("utf-8"))
+        assert issue_data["number"] == 7
+        assert "[GitHub Issue #7]" in issue_data["task_prompt"]
+
+        # 2. GET /api/runs/run-done01 backfills pr_draft_markdown automatically
+        with urllib.request.urlopen(f"{base_url}/api/runs/run-done01") as resp:
+            assert resp.status == 200
+            done_detail = json.loads(resp.read().decode("utf-8"))
+        assert "## 작업 요약" in done_detail["pr_draft_markdown"]
+
+        # 2b. Invalid extra_attempts returns 400 without leaking worker_lock
+        req_bad_retry = urllib.request.Request(
+            f"{base_url}/api/runs/run-halt01/retry",
+            data=json.dumps({"extra_attempts": "invalid"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_bad:
+            urllib.request.urlopen(req_bad_retry)
+        assert exc_bad.value.code == 400
+
+        # 3. POST /api/runs/run-halt01/retry transitions HALT -> DONE via checkpoint retry
+        req_retry = urllib.request.Request(
+            f"{base_url}/api/runs/run-halt01/retry",
+            data=json.dumps({"extra_attempts": 3}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req_retry) as resp:
+            assert resp.status == 202
+
+        for _ in range(20):
+            r = store.get_run("run-halt01")
+            if r and r.state == RunState.DONE:
+                break
+            time.sleep(0.02)
+
+        retried = store.get_run("run-halt01")
+        assert retried is not None
+        assert retried.state == RunState.DONE
+
+        # 4. POST /api/runs/run-halt01/pr with publish=True publishes Draft PR and saves pr_url
+        req_pr = urllib.request.Request(
+            f"{base_url}/api/runs/run-halt01/pr",
+            data=json.dumps({"publish": True, "draft": True}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req_pr) as resp:
+            assert resp.status == 200
+            pr_res = json.loads(resp.read().decode("utf-8"))
+        assert pr_res["pr_url"] == "https://github.com/ChoiJaeWoon/autoDev/pull/99"
+        assert store.get_run("run-halt01").pr_url == "https://github.com/ChoiJaeWoon/autoDev/pull/99"
+    finally:
+        server.shutdown()
+        server.server_close()
+
 
 

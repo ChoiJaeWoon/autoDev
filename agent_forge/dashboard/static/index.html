@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Agent Forge — Workspace &amp; Inspector</title>
-  <link rel="stylesheet" href="/static/styles.css?v=3" />
+  <link rel="stylesheet" href="/static/styles.css?v=4" />
 </head>
 <body>
   <header class="topbar">
@@ -47,10 +47,23 @@
           <div class="composer-header">
             <div>
               <h2 class="composer-title">New Autonomous Mission</h2>
-              <p class="composer-subtitle">요구사항을 입력하면 계획 수립, 테스트 잠금, 코드 패치, 검증 루프를 자율 수행합니다.</p>
+              <p class="composer-subtitle">요구사항을 입력하거나 GitHub 이슈를 불러오면 계획 수립, 테스트 잠금, 코드 패치, 검증 및 PR 초안 생성을 자율 수행합니다.</p>
             </div>
-            <span id="mission-feedback" class="composer-feedback hidden"></span>
+            <div class="issue-import-bar">
+              <span id="issue-linked-badge" class="badge badge-active hidden"></span>
+              <input
+                id="issue-import-input"
+                class="issue-number-input"
+                type="number"
+                min="1"
+                placeholder="GitHub Issue #"
+              />
+              <button id="issue-import-btn" class="btn" type="button">
+                Import Issue
+              </button>
+            </div>
           </div>
+          <span id="mission-feedback" class="composer-feedback hidden"></span>
 
           <textarea
             id="mission-input"
@@ -104,6 +117,34 @@
             <button id="reject-run-btn" class="btn btn-danger" type="button">Reject &amp; Halt</button>
             <button id="approve-run-btn" class="btn btn-primary" type="button">Approve &amp; Continue</button>
           </div>
+        </section>
+
+        <section id="halt-retry-banner" class="panel retry-banner hidden">
+          <div class="approval-info">
+            <span class="badge badge-halt">CHECKPOINT RETRY</span>
+            <div>
+              <h3 class="approval-title">중단 지점(Checkpoint)부터 즉시 재실행할 수 있습니다</h3>
+              <p class="approval-desc">처음(PLAN)부터 다시 시작하지 않고, 잠긴 테스트 스위트(Baseline Commit) 체크포인트부터 구현·검증을 이어서 수행합니다.</p>
+            </div>
+          </div>
+          <div class="approval-actions">
+            <button id="retry-run-btn" class="btn btn-primary" type="button">Retry from Checkpoint (+3 Attempts)</button>
+          </div>
+        </section>
+
+        <section id="pr-draft-panel" class="panel pr-draft-panel hidden">
+          <div class="panel-header">
+            <div>
+              <span class="panel-title">Automated Pull Request Draft &amp; GitHub Publishing</span>
+              <p class="panel-subtitle">검증(VERIFY)을 통과한 작업의 한국어 PR 초안 마크다운 및 GitHub Draft PR 원클릭 발행</p>
+            </div>
+            <div class="diff-selector-bar">
+              <a id="pr-published-link" class="badge badge-pass hidden" href="#" target="_blank" rel="noopener noreferrer">View GitHub PR</a>
+              <button id="copy-pr-btn" class="btn" type="button">Copy Markdown</button>
+              <button id="publish-pr-btn" class="btn btn-primary" type="button">Publish Draft PR to GitHub</button>
+            </div>
+          </div>
+          <pre id="pr-draft-viewer" class="pr-draft-viewer"></pre>
         </section>
 
         <section class="panel run-header-panel">
@@ -266,6 +307,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js?v=4"></script>
 </body>
 </html>

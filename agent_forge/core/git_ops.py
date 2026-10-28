@@ -71,6 +71,9 @@ class GitOps:
         self._run_git(["checkout", "-B", branch_name])
         return self.get_head_commit()
 
+    def checkout_branch(self, branch_name: str) -> None:
+        self._run_git(["checkout", branch_name])
+
     def get_working_tree_hash(self) -> str:
         """Compute deterministic git tree SHA of current working tree + untracked files without mutating index."""
         self._purge_transient_caches()

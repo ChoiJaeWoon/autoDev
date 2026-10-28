@@ -20,6 +20,14 @@ from agent_forge.config import ForgeConfig
 from agent_forge.core.engine import ForgeEngine
 from agent_forge.core.state import HaltReason, RunRecord, RunState
 from agent_forge.core.store import StateStore
+from agent_forge.integrations.github_ops import (
+    build_pr_draft_markdown,
+    detect_github_repo,
+    fetch_github_issue,
+    format_issue_as_task,
+    publish_github_pr,
+    resolve_github_token,
+)
 from agent_forge.llm.client import OpenAICompatibleClient
 from agent_forge.verifiers.legacy_web import PlaywrightVisualVerifier
 from agent_forge.verifiers.test_runner import SubprocessTestVerifier
@@ -123,8 +131,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             return None
-        if length <= 0 or length > 262144:
+        if length == 0:
             return {}
+        if length < 0 or length > 262144:
+            return None
         raw = self.rfile.read(length)
         try:
             parsed = json.loads(raw.decode("utf-8"))
@@ -171,6 +181,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     "total_tokens": r.total_tokens,
                     "total_cost_usd": r.total_cost_usd,
                     "attempt_count": len(r.attempts),
+                    "issue_number": r.issue_number,
+                    "issue_url": r.issue_url,
+                    "pr_url": r.pr_url,
                 }
                 for r in runs
             ]
@@ -182,6 +195,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     "runs": summaries,
                 },
             )
+            return
+
+        if raw_path.startswith("/api/github/issues/"):
+            issue_str = raw_path.removeprefix("/api/github/issues/").strip("/")
+            if not issue_str.isdigit():
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid issue number"})
+                return
+            self._handle_get_github_issue(int(issue_str))
             return
 
         art_match = _ARTIFACT_PATH_RE.match(raw_path)
@@ -206,6 +227,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     {"error": f"Run '{run_id}' not found"},
                 )
                 return
+
+            if run.state == RunState.DONE and not run.pr_draft_markdown.strip():
+                run.pr_draft_markdown = build_pr_draft_markdown(run)
+                store.save_run(run)
 
             payload = run.model_dump(mode="json")
             payload["baseline_diff"] = _resolve_commit_diff(
@@ -297,7 +322,39 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._handle_post_resume_run(middle, body)
             return
 
+        if raw_path.startswith("/api/runs/") and raw_path.endswith("/retry"):
+            middle = raw_path.removeprefix("/api/runs/").removesuffix("/retry").strip("/")
+            if not middle or "/" in middle:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid run retry path"})
+                return
+            self._handle_post_retry_run(middle, body)
+            return
+
+        if raw_path.startswith("/api/runs/") and raw_path.endswith("/pr"):
+            middle = raw_path.removeprefix("/api/runs/").removesuffix("/pr").strip("/")
+            if not middle or "/" in middle:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid run PR path"})
+                return
+            self._handle_post_pr(middle, body)
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
+
+    def _handle_get_github_issue(self, issue_number: int) -> None:
+        slug = detect_github_repo(self.server.workspace_root) or "ChoiJaeWoon/autoDev"
+        token = resolve_github_token(self.server.workspace_root)
+        try:
+            issue = fetch_github_issue(slug, issue_number, token=token)
+        except Exception as exc:
+            self._send_json(
+                HTTPStatus.BAD_GATEWAY,
+                {"error": f"Failed to fetch GitHub issue #{issue_number} from {slug}: {exc}"},
+            )
+            return
+
+        issue["repo_slug"] = slug
+        issue["task_prompt"] = format_issue_as_task(issue)
+        self._send_json(HTTPStatus.OK, issue)
 
     def _handle_post_start_run(self, body: dict[str, Any]) -> None:
         task = str(body.get("task") or "").strip()
@@ -337,6 +394,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         custom_test_cmd = str(body.get("test_cmd") or "").strip() or _default_test_cmd_for_repo(
             candidate_repo
         )
+        raw_issue_num = body.get("issue_number")
+        issue_number = (
+            int(raw_issue_num)
+            if raw_issue_num is not None and str(raw_issue_num).isdigit()
+            else None
+        )
+        issue_url = str(body.get("issue_url") or "").strip()
 
         if not self.server.worker_lock.acquire(blocking=False):
             self._send_json(
@@ -353,18 +417,38 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             repo_root=str(candidate_repo),
             branch_name=f"forge/{run_id}",
             state=RunState.INIT,
+            issue_number=issue_number,
+            issue_url=issue_url,
         )
-        store.save_run(initial_record)
+        try:
+            store.save_run(initial_record)
+        except Exception as exc:
+            self.server.worker_lock.release()
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": f"Failed to initialize run record: {exc}"},
+            )
+            return
 
         def _worker() -> None:
             try:
                 engine = self.server.engine_factory(self.server.db_path, custom_test_cmd)
-                engine.start_run(
-                    task,
-                    repo_root=candidate_repo,
-                    auto_approve=auto_approve,
-                    run_id=run_id,
-                )
+                try:
+                    engine.start_run(
+                        task,
+                        repo_root=candidate_repo,
+                        auto_approve=auto_approve,
+                        run_id=run_id,
+                        issue_number=issue_number,
+                        issue_url=issue_url,
+                    )
+                except TypeError:
+                    engine.start_run(
+                        task,
+                        repo_root=candidate_repo,
+                        auto_approve=auto_approve,
+                        run_id=run_id,
+                    )
             except Exception as exc:
                 err_store = StateStore(self.server.db_path)
                 rec = err_store.get_run(run_id) or initial_record
@@ -425,6 +509,132 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self._send_json(
             HTTPStatus.ACCEPTED,
             {"run_id": run_id, "resuming": True, "approve": approve},
+        )
+
+    def _handle_post_retry_run(self, run_id: str, body: dict[str, Any]) -> None:
+        store = StateStore(self.server.db_path)
+        run = store.get_run(run_id)
+        if run is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Run '{run_id}' not found"})
+            return
+        if run.state != RunState.HALT:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": f"Run '{run_id}' is in state {run.state.value}, not HALT"},
+            )
+            return
+
+        raw_extra = body.get("extra_attempts", 3)
+        if isinstance(raw_extra, bool):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "extra_attempts must be an integer between 1 and 20."},
+            )
+            return
+        try:
+            extra_attempts = int(raw_extra)
+        except (ValueError, TypeError):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "extra_attempts must be an integer between 1 and 20."},
+            )
+            return
+        if extra_attempts < 1 or extra_attempts > 20:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "extra_attempts must be between 1 and 20."},
+            )
+            return
+
+        if not self.server.worker_lock.acquire(blocking=False):
+            self._send_json(
+                HTTPStatus.CONFLICT,
+                {"error": "Another Agent Forge run is currently executing. Please wait."},
+            )
+            return
+
+        custom_test_cmd = str(body.get("test_cmd") or "").strip() or _default_test_cmd_for_repo(
+            Path(run.repo_root)
+        )
+
+        def _retry_worker() -> None:
+            try:
+                engine = self.server.engine_factory(self.server.db_path, custom_test_cmd)
+                engine.retry_from_checkpoint(run_id, extra_attempts=extra_attempts)
+            except Exception as exc:
+                err_store = StateStore(self.server.db_path)
+                rec = err_store.get_run(run_id)
+                if rec is not None:
+                    rec.state = RunState.HALT
+                    rec.halt_reason = HaltReason.POLICY_VIOLATION
+                    rec.last_error_output = f"Checkpoint retry error: {exc}"
+                    err_store.save_run(rec)
+            finally:
+                self.server.worker_lock.release()
+
+        threading.Thread(target=_retry_worker, daemon=True).start()
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            {"run_id": run_id, "retrying": True, "extra_attempts": extra_attempts},
+        )
+
+    def _handle_post_pr(self, run_id: str, body: dict[str, Any]) -> None:
+        store = StateStore(self.server.db_path)
+        run = store.get_run(run_id)
+        if run is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Run '{run_id}' not found"})
+            return
+        if run.state != RunState.DONE:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": f"Run '{run_id}' must be in DONE state to generate or publish a PR."},
+            )
+            return
+
+        if not run.pr_draft_markdown.strip():
+            run.pr_draft_markdown = build_pr_draft_markdown(run)
+            store.save_run(run)
+
+        if bool(body.get("publish", False)) and not run.pr_url.strip():
+            repo_path = Path(run.repo_root)
+            slug = (
+                detect_github_repo(repo_path)
+                or detect_github_repo(self.server.workspace_root)
+                or "ChoiJaeWoon/autoDev"
+            )
+            token = resolve_github_token(repo_path) or resolve_github_token(
+                self.server.workspace_root
+            )
+            if not token:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "GitHub Personal Access Token not found in environment or config."},
+                )
+                return
+            try:
+                pr_url = publish_github_pr(
+                    run,
+                    repo_slug=slug,
+                    token=token,
+                    base_branch=str(body.get("base_branch") or "main"),
+                    draft=bool(body.get("draft", True)),
+                )
+                run.pr_url = pr_url
+                store.save_run(run)
+            except Exception as exc:
+                self._send_json(
+                    HTTPStatus.BAD_GATEWAY,
+                    {"error": f"Failed to publish GitHub PR: {exc}"},
+                )
+                return
+
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "run_id": run.run_id,
+                "pr_draft_markdown": run.pr_draft_markdown,
+                "pr_url": run.pr_url,
+            },
         )
 
 

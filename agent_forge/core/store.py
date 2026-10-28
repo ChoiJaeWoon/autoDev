@@ -35,7 +35,11 @@ class StateStore:
                     total_cost_usd REAL NOT NULL DEFAULT 0.0,
                     baseline_commit_sha TEXT,
                     reflection_notes_json TEXT NOT NULL DEFAULT '[]',
-                    last_error_output TEXT NOT NULL DEFAULT ''
+                    last_error_output TEXT NOT NULL DEFAULT '',
+                    issue_number INTEGER,
+                    issue_url TEXT NOT NULL DEFAULT '',
+                    pr_draft_markdown TEXT NOT NULL DEFAULT '',
+                    pr_url TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS attempts (
@@ -57,6 +61,25 @@ class StateStore:
                 );
                 """
             )
+            run_cols = [
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+            ]
+            if "issue_number" not in run_cols:
+                conn.execute("ALTER TABLE runs ADD COLUMN issue_number INTEGER")
+            if "issue_url" not in run_cols:
+                conn.execute(
+                    "ALTER TABLE runs ADD COLUMN issue_url TEXT NOT NULL DEFAULT ''"
+                )
+            if "pr_draft_markdown" not in run_cols:
+                conn.execute(
+                    "ALTER TABLE runs ADD COLUMN pr_draft_markdown TEXT NOT NULL DEFAULT ''"
+                )
+            if "pr_url" not in run_cols:
+                conn.execute(
+                    "ALTER TABLE runs ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''"
+                )
+
             cols = [
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(attempts)").fetchall()
@@ -75,8 +98,9 @@ class StateStore:
                 INSERT INTO runs (
                     run_id, task_description, repo_root, branch_name, state,
                     halt_reason, plan_json, total_tokens, total_cost_usd,
-                    baseline_commit_sha, reflection_notes_json, last_error_output
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    baseline_commit_sha, reflection_notes_json, last_error_output,
+                    issue_number, issue_url, pr_draft_markdown, pr_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     task_description = excluded.task_description,
                     repo_root = excluded.repo_root,
@@ -88,7 +112,11 @@ class StateStore:
                     total_cost_usd = excluded.total_cost_usd,
                     baseline_commit_sha = excluded.baseline_commit_sha,
                     reflection_notes_json = excluded.reflection_notes_json,
-                    last_error_output = excluded.last_error_output
+                    last_error_output = excluded.last_error_output,
+                    issue_number = excluded.issue_number,
+                    issue_url = excluded.issue_url,
+                    pr_draft_markdown = excluded.pr_draft_markdown,
+                    pr_url = excluded.pr_url
                 """,
                 (
                     run.run_id,
@@ -103,6 +131,10 @@ class StateStore:
                     run.baseline_commit_sha,
                     reflection_json,
                     run.last_error_output,
+                    run.issue_number,
+                    run.issue_url,
+                    run.pr_draft_markdown,
+                    run.pr_url,
                 ),
             )
             for attempt in run.attempts:
@@ -198,6 +230,10 @@ class StateStore:
             baseline_commit_sha=row["baseline_commit_sha"],
             reflection_notes=json.loads(row["reflection_notes_json"] or "[]"),
             last_error_output=row["last_error_output"] or "",
+            issue_number=row["issue_number"],
+            issue_url=row["issue_url"] or "",
+            pr_draft_markdown=row["pr_draft_markdown"] or "",
+            pr_url=row["pr_url"] or "",
             attempts=attempts,
         )
 

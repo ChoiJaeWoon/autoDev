@@ -69,4 +69,8 @@ class RunRecord(BaseModel):
     baseline_commit_sha: str | None = None
     reflection_notes: list[str] = Field(default_factory=list)
     last_error_output: str = ""
+    issue_number: int | None = None
+    issue_url: str = ""
+    pr_draft_markdown: str = ""
+    pr_url: str = ""
     attempts: list[AttemptRecord] = Field(default_factory=list)
