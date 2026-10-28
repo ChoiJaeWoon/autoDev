@@ -12,6 +12,7 @@ from agent_forge.core.engine import ForgeEngine
 from agent_forge.core.store import StateStore
 from agent_forge.dashboard.server import start_dashboard_server
 from agent_forge.llm.client import OpenAICompatibleClient
+from agent_forge.verifiers.legacy_web import PlaywrightVisualVerifier
 from agent_forge.verifiers.test_runner import SubprocessTestVerifier
 
 app = typer.Typer(help="Agent Forge: Autonomous Coding Harness with Guardrails")
@@ -37,9 +38,12 @@ def run_command(
     config = ForgeConfig(max_attempts=max_attempts)
     store = StateStore(db_path)
     llm = OpenAICompatibleClient(config)
-    verifier = SubprocessTestVerifier(
-        shlex.split(test_cmd), timeout_seconds=config.test_timeout_seconds
-    )
+    if (repo / "pom.xml").is_file() and not (repo / "pyproject.toml").is_file():
+        verifier = PlaywrightVisualVerifier()
+    else:
+        verifier = SubprocessTestVerifier(
+            shlex.split(test_cmd), timeout_seconds=config.test_timeout_seconds
+        )
     engine = ForgeEngine(config, store, llm, verifier)
 
     record = engine.start_run(task, repo_root=repo, auto_approve=auto_approve)
@@ -125,10 +129,18 @@ def resume_command(
     config = ForgeConfig()
     store = StateStore(db_path)
     llm = OpenAICompatibleClient(config)
-    verifier = SubprocessTestVerifier(
-        shlex.split(test_cmd), timeout_seconds=config.test_timeout_seconds
-    )
-    engine = ForgeEngine(config, store, llm, verifier)
+    existing = store.get_run(run_id)
+    if (
+        existing is not None
+        and (Path(existing.repo_root) / "pom.xml").is_file()
+        and not (Path(existing.repo_root) / "pyproject.toml").is_file()
+    ):
+        verifier: object = PlaywrightVisualVerifier()
+    else:
+        verifier = SubprocessTestVerifier(
+            shlex.split(test_cmd), timeout_seconds=config.test_timeout_seconds
+        )
+    engine = ForgeEngine(config, store, llm, verifier)  # type: ignore[arg-type]
     record = engine.resume_run(run_id, approve=approve)
     console.print(
         f"[green]Run '{record.run_id}' resumed -> {record.state.value} ({record.halt_reason.value})[/green]"

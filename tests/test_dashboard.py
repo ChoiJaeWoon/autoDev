@@ -80,6 +80,12 @@ def sample_dashboard_env(tmp_path: Path):
     )
     store.save_run(run1)
 
+    # Create dummy screenshot files for run-002 attempt 1
+    art_dir = tmp_path / "artifacts"
+    art_dir.mkdir(exist_ok=True)
+    for name in ("baseline.png", "after.png", "diff.png"):
+        (art_dir / name).write_bytes(b"\x89PNG\r\n\x1a\nfake-png-bytes")
+
     run2 = RunRecord(
         run_id="run-002",
         task_description="sub(a, b) 함수 추가 및 검증",
@@ -107,6 +113,13 @@ def sample_dashboard_env(tmp_path: Path):
                 prompt_tokens=450,
                 completion_tokens=400,
                 cost_usd=0.0006,
+                artifacts={
+                    "baseline_screenshot": str(art_dir / "baseline.png"),
+                    "after_screenshot": str(art_dir / "after.png"),
+                    "diff_screenshot": str(art_dir / "diff.png"),
+                    "diff_ratio": "0.0315",
+                    "dom_status": "PASS",
+                },
             )
         ],
     )
@@ -154,6 +167,69 @@ def test_dashboard_api_list_and_get_run_with_git_diffs(sample_dashboard_env):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(f"{base_url}/api/runs/run-missing")
     assert exc_info.value.code == 404
+
+    # 4. Serve visual regression screenshot artifacts (baseline / after / diff)
+    for kind in ("baseline", "after", "diff"):
+        with urllib.request.urlopen(
+            f"{base_url}/api/runs/run-002/artifacts/1/{kind}"
+        ) as resp:
+            assert resp.status == 200
+            assert "image/png" in resp.headers.get("Content-Type", "")
+            assert resp.read().startswith(b"\x89PNG")
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{base_url}/api/runs/run-002/artifacts/1/unknown")
+    assert exc_info.value.code == 404
+
+
+def test_dashboard_artifact_endpoint_blocks_outside_workspace_and_invalid_png(
+    sample_dashboard_env, tmp_path: Path
+):
+    base_url, db_path, repo = sample_dashboard_env
+    store = StateStore(db_path)
+
+    bad_png = tmp_path / "artifacts" / "not_really_png.png"
+    bad_png.parent.mkdir(exist_ok=True)
+    bad_png.write_bytes(b"NOT_A_PNG_HEADER_AT_ALL")
+
+    outside_file = Path("/tmp/outside_forge_test_artifact.png")
+    outside_file.write_bytes(b"\x89PNG\r\n\x1a\nvalid-header-but-outside")
+
+    try:
+        run_sec = RunRecord(
+            run_id="run-sec",
+            task_description="보안 검증",
+            repo_root=str(repo),
+            branch_name="forge/run-sec",
+            state=RunState.DONE,
+            attempts=[
+                AttemptRecord(
+                    attempt_number=1,
+                    phase=RunState.VERIFY,
+                    tree_hash="12345678",
+                    patch_summary="test",
+                    test_passed=True,
+                    exit_code=0,
+                    artifacts={
+                        "baseline_screenshot": str(outside_file),
+                        "after_screenshot": str(bad_png),
+                    },
+                )
+            ],
+        )
+        store.save_run(run_sec)
+
+        # Outside workspace must be rejected with 404
+        with pytest.raises(urllib.error.HTTPError) as exc_out:
+            urllib.request.urlopen(f"{base_url}/api/runs/run-sec/artifacts/1/baseline")
+        assert exc_out.value.code == 404
+
+        # File without PNG magic header must be rejected with 404
+        with pytest.raises(urllib.error.HTTPError) as exc_magic:
+            urllib.request.urlopen(f"{base_url}/api/runs/run-sec/artifacts/1/after")
+        assert exc_magic.value.code == 404
+    finally:
+        outside_file.unlink(missing_ok=True)
 
 
 def test_dashboard_post_dispatch_run_and_resume_approval(tmp_path: Path):
@@ -310,6 +386,10 @@ def test_dashboard_static_assets_and_path_traversal_guard(sample_dashboard_env):
         'id="attempts-table"',
         'id="diff-viewer"',
         'id="approval-banner"',
+        'id="visual-regression-panel"',
+        'id="vis-img-baseline"',
+        'id="vis-img-after"',
+        'id="vis-img-diff"',
     ):
         assert required_id in html
 

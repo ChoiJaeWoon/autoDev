@@ -21,10 +21,14 @@ from agent_forge.core.engine import ForgeEngine
 from agent_forge.core.state import HaltReason, RunRecord, RunState
 from agent_forge.core.store import StateStore
 from agent_forge.llm.client import OpenAICompatibleClient
+from agent_forge.verifiers.legacy_web import PlaywrightVisualVerifier
 from agent_forge.verifiers.test_runner import SubprocessTestVerifier
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+_ARTIFACT_PATH_RE = re.compile(
+    r"^/api/runs/(?P<run_id>[^/]+)/artifacts/(?P<attempt>\d+)/(?P<kind>baseline|after|diff)$"
+)
 
 
 def _resolve_commit_diff(repo_root: str, commit_sha: str | None) -> str:
@@ -51,9 +55,9 @@ def _resolve_commit_diff(repo_root: str, commit_sha: str | None) -> str:
 
 
 def _default_test_cmd_for_repo(repo_path: Path) -> str:
-    """Infer the default test command for a target repository."""
+    """Infer the default test command or verifier mode for a target repository."""
     if (repo_path / "pom.xml").is_file() and not (repo_path / "pyproject.toml").is_file():
-        return "mvn test -q"
+        return "legacy-web"
     return f"{sys.executable} -m pytest -q"
 
 
@@ -62,9 +66,12 @@ def _default_engine_factory(db_path: Path, test_cmd: str | None = None) -> Forge
     store = StateStore(db_path)
     llm = OpenAICompatibleClient(config)
     effective_cmd = test_cmd or f"{sys.executable} -m pytest -q"
-    verifier = SubprocessTestVerifier(
-        shlex.split(effective_cmd), timeout_seconds=config.test_timeout_seconds
-    )
+    if effective_cmd == "legacy-web":
+        verifier: Any = PlaywrightVisualVerifier()
+    else:
+        verifier = SubprocessTestVerifier(
+            shlex.split(effective_cmd), timeout_seconds=config.test_timeout_seconds
+        )
     return ForgeEngine(config, store, llm, verifier)
 
 
@@ -177,6 +184,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        art_match = _ARTIFACT_PATH_RE.match(raw_path)
+        if art_match:
+            self._handle_get_artifact(
+                art_match.group("run_id"),
+                int(art_match.group("attempt")),
+                art_match.group("kind"),
+            )
+            return
+
         if raw_path.startswith("/api/runs/"):
             run_id = raw_path.removeprefix("/api/runs/").strip("/")
             if not run_id or "/" in run_id:
@@ -215,6 +231,52 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found"})
 
+    def _handle_get_artifact(self, run_id: str, attempt_num: int, kind: str) -> None:
+        store = StateStore(self.server.db_path)
+        run = store.get_run(run_id)
+        if run is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Run not found"})
+            return
+
+        target_att = next(
+            (a for a in run.attempts if a.attempt_number == attempt_num), None
+        )
+        if target_att is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Attempt not found"})
+            return
+
+        key = f"{kind}_screenshot"
+        file_path_str = (target_att.artifacts or {}).get(key)
+        if not file_path_str:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Artifact '{key}' not recorded"})
+            return
+
+        img_path = Path(file_path_str).resolve()
+        ws_root = self.server.workspace_root.resolve()
+        default_art_root = Path(".forge/artifacts").resolve()
+        if not (
+            img_path.is_relative_to(ws_root)
+            or img_path.is_relative_to(default_art_root)
+        ):
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Artifact path outside workspace"})
+            return
+
+        if not img_path.is_file() or img_path.suffix.lower() != ".png":
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Artifact image file not found"})
+            return
+
+        data = img_path.read_bytes()
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid PNG signature"})
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         raw_path = unquote(parsed.path)
@@ -247,6 +309,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
 
         raw_repo = str(body.get("repo_root") or "targets/python-mini-calc").strip()
+        if raw_repo == "targets/python-mini-calc" and any(
+            kw in task.lower() for kw in (".jsp", ".java", "boardservice", "게시판")
+        ):
+            legacy_candidate = (self.server.workspace_root / "targets/legacy-jsp-app").resolve()
+            if legacy_candidate.is_dir():
+                raw_repo = "targets/legacy-jsp-app"
+
         candidate_repo = (
             Path(raw_repo).resolve()
             if Path(raw_repo).is_absolute()

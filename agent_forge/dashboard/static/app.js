@@ -219,6 +219,29 @@
     });
   }
 
+  function renderVisualRegression(runId, attempt) {
+    const panel = el("visual-regression-panel");
+    if (!attempt || !attempt.artifacts || !attempt.artifacts.after_screenshot) {
+      panel.classList.add("hidden");
+      return;
+    }
+
+    panel.classList.remove("hidden");
+    const domStatus = attempt.artifacts.dom_status || "PASS";
+    const domBadge = el("vis-dom-badge");
+    domBadge.className = domStatus === "PASS" ? "badge badge-pass" : "badge badge-fail";
+    domBadge.textContent = `DOM: ${domStatus}`;
+
+    const ratioRaw = Number(attempt.artifacts.diff_ratio || 0);
+    const ratioBadge = el("vis-diff-ratio-badge");
+    ratioBadge.textContent = `DIFF: ${(ratioRaw * 100).toFixed(2)}%`;
+
+    const cacheBust = `?t=${Date.now()}`;
+    el("vis-img-baseline").src = `/api/runs/${encodeURIComponent(runId)}/artifacts/${attempt.attempt_number}/baseline${cacheBust}`;
+    el("vis-img-after").src = `/api/runs/${encodeURIComponent(runId)}/artifacts/${attempt.attempt_number}/after${cacheBust}`;
+    el("vis-img-diff").src = `/api/runs/${encodeURIComponent(runId)}/artifacts/${attempt.attempt_number}/diff${cacheBust}`;
+  }
+
   function renderAttemptsAndDiffs(run) {
     const tbody = el("attempts-tbody");
     const btnGroup = el("diff-attempt-buttons");
@@ -246,6 +269,7 @@
     }
 
     if (attempts.length === 0) {
+      el("visual-regression-panel").classList.add("hidden");
       const tr = createEl("tr");
       const td = createEl("td", "meta-label", "아직 기록된 구현 시도(Attempt)가 없습니다.");
       td.colSpan = 10;
@@ -290,6 +314,7 @@
           `Commit Patch Inspector — Attempt #${att.attempt_number} (${shortSha(att.commit_sha, 7)})`,
           diffText
         );
+        renderVisualRegression(run.run_id, att);
       };
 
       tr.addEventListener("click", selectAttemptDiff);
@@ -310,6 +335,7 @@
       `Commit Patch Inspector — Attempt #${lastAtt.attempt_number} (${shortSha(lastAtt.commit_sha, 7)})`,
       lastDiff
     );
+    renderVisualRegression(run.run_id, lastAtt);
   }
 
   function renderDiagnostics(run) {
@@ -489,6 +515,14 @@
 
   function initControls() {
     el("mission-form").addEventListener("submit", submitNewMission);
+    el("mission-input").addEventListener("input", (evt) => {
+      const val = (evt.target.value || "").toLowerCase();
+      if (val.includes(".jsp") || val.includes(".java") || val.includes("boardservice") || val.includes("게시판")) {
+        el("mission-repo").value = "targets/legacy-jsp-app";
+      } else if (val.includes("calculator") || val.includes(".py")) {
+        el("mission-repo").value = "targets/python-mini-calc";
+      }
+    });
     el("mission-input").addEventListener("keydown", (evt) => {
       if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
         evt.preventDefault();

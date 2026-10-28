@@ -57,6 +57,11 @@ def test_state_store_roundtrip_run_and_attempts(tmp_path: Path):
         prompt_tokens=1000,
         completion_tokens=500,
         cost_usd=0.002,
+        artifacts={
+            "baseline_screenshot": "/tmp/baseline.png",
+            "after_screenshot": "/tmp/after.png",
+            "diff_ratio": "0.042",
+        },
     )
     store.add_attempt("run-001", attempt)
 
@@ -66,4 +71,5 @@ def test_state_store_roundtrip_run_and_attempts(tmp_path: Path):
     assert loaded.plan == plan
     assert len(loaded.attempts) == 1
     assert loaded.attempts[0].error_fingerprint == "fp-001"
+    assert loaded.attempts[0].artifacts["diff_ratio"] == "0.042"
     assert len(store.list_runs()) == 1

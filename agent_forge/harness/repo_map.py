@@ -25,6 +25,8 @@ JAVA_METHOD_RE = re.compile(
     r"^\s*(?:public|protected|private)\s+(?:static\s+|final\s+|synchronized\s+)*[\w<>[\], ?]+\s+(\w+)\s*\(([^)]*)\)"
 )
 JSP_FORM_RE = re.compile(r"<form[^>]*action=[\"']([^\"']+)[\"']", re.IGNORECASE)
+JSP_TH_RE = re.compile(r"<th[^>]*>(.*?)</th>", re.IGNORECASE | re.DOTALL)
+CSS_SELECTOR_RE = re.compile(r"(?:^|\n)\s*([.#][a-zA-Z0-9_-]+)\s*(?:,|\{)")
 
 
 def _summarize_python_file(path: Path) -> list[str]:
@@ -77,6 +79,32 @@ def _summarize_jsp_file(path: Path) -> list[str]:
 
     for match in JSP_FORM_RE.finditer(content):
         signatures.append(f"  <form action=\"{match.group(1)}\">")
+
+    th_labels = [
+        re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        for m in JSP_TH_RE.finditer(content)
+    ]
+    th_labels = [lbl for lbl in th_labels if lbl]
+    if th_labels:
+        signatures.append(f"  <th>: {', '.join(th_labels)}")
+
+    return signatures
+
+
+def _summarize_css_file(path: Path) -> list[str]:
+    signatures: list[str] = []
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return signatures
+
+    seen: list[str] = []
+    for match in CSS_SELECTOR_RE.finditer(content):
+        sel = match.group(1).strip()
+        if sel not in seen:
+            seen.append(sel)
+    for sel in seen[:10]:
+        signatures.append(f"  {sel}")
     return signatures
 
 
@@ -107,5 +135,7 @@ def build_repo_map(repo_root: Path, max_files: int = 100) -> str:
             output_lines.extend(_summarize_java_file(path))
         elif suffix in {".jsp", ".html"}:
             output_lines.extend(_summarize_jsp_file(path))
+        elif suffix == ".css":
+            output_lines.extend(_summarize_css_file(path))
 
     return "\n".join(output_lines)

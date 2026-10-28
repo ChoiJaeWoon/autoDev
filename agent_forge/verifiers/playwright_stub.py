@@ -1,25 +1,25 @@
-"""Stage 2 extension point stub for Playwright visual regression and DOM verification."""
+"""Stage 2 Playwright visual regression and DOM verifier re-export."""
 
 from pathlib import Path
 from agent_forge.verifiers.base import VerificationResult
+from agent_forge.verifiers.legacy_web import PlaywrightVisualVerifier
 
 
-class PlaywrightVisualVerifierStub:
-    """Placeholder implementing Verifier protocol for Stage 2 legacy web maintenance."""
+class PlaywrightVisualVerifierStub(PlaywrightVisualVerifier):
+    """Backward-compatible wrapper around PlaywrightVisualVerifier."""
 
-    def __init__(self, target_url: str = "http://localhost:8080", diff_threshold: float = 0.02):
+    def __init__(
+        self,
+        target_url: str = "http://localhost:8080",
+        diff_threshold: float = 0.02,
+        artifacts_dir: Path = Path(".forge/artifacts"),
+    ):
+        super().__init__(artifacts_dir=artifacts_dir)
         self.target_url = target_url
         self.diff_threshold = diff_threshold
 
     def verify(self, repo_root: Path) -> VerificationResult:
-        return VerificationResult(
-            passed=True,
-            exit_code=0,
-            summary=f"Stage 2 Playwright visual verifier stub for {self.target_url}",
-            raw_output="Stage 2 visual diff check not yet active in Stage 1.",
-            error_fingerprint=None,
-            artifacts={
-                "target_url": self.target_url,
-                "diff_threshold": str(self.diff_threshold),
-            },
-        )
+        res = super().verify(repo_root)
+        res.artifacts.setdefault("target_url", self.target_url)
+        res.artifacts.setdefault("diff_threshold", str(self.diff_threshold))
+        return res
