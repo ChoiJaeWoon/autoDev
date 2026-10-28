@@ -29,12 +29,10 @@ class FileGuard:
         self._test_whitelist = {self._normalize_rel(p) for p in plan.target_test_files}
 
     def _normalize_rel(self, rel_path: str) -> str:
-        return Path(rel_path).as_posix().lstrip("./")
+        return Path(rel_path).as_posix().removeprefix("./")
 
     def is_test_file(self, rel_path: str) -> bool:
         norm = self._normalize_rel(rel_path)
-        if norm in self._test_whitelist:
-            return True
         parts = Path(norm).parts
         name = Path(norm).name
         if any(p in {"test", "tests"} for p in parts):
@@ -44,6 +42,32 @@ class FileGuard:
         if name.startswith("test_") or name.endswith("_test.py") or name.endswith("Test.java"):
             return True
         return False
+
+    def validate_plan(self) -> None:
+        """Verify all paths in PlanSpec stay inside repo_root and respect source vs. test file roles."""
+        for src_path in self.plan.target_source_files:
+            candidate = (self.repo_root / src_path).resolve()
+            if not candidate.is_relative_to(self.repo_root):
+                raise GuardViolation(
+                    f"Planned source file '{src_path}' resolves outside repository root"
+                )
+            rel_norm = candidate.relative_to(self.repo_root).as_posix()
+            if self.is_test_file(rel_norm):
+                raise GuardViolation(
+                    f"Planned source file '{rel_norm}' is a test file and must not be in target_source_files"
+                )
+
+        for tst_path in self.plan.target_test_files:
+            candidate = (self.repo_root / tst_path).resolve()
+            if not candidate.is_relative_to(self.repo_root):
+                raise GuardViolation(
+                    f"Planned test file '{tst_path}' resolves outside repository root"
+                )
+            rel_norm = candidate.relative_to(self.repo_root).as_posix()
+            if not self.is_test_file(rel_norm):
+                raise GuardViolation(
+                    f"Planned test file '{rel_norm}' is not a valid test file path"
+                )
 
     def validate_edit_target(self, rel_path: str, phase: RunState) -> Path:
         """Resolve path within repo_root and verify phase-specific file permissions."""
@@ -75,17 +99,31 @@ class FileGuard:
 
         raise GuardViolation(f"File editing is not permitted in phase {phase.value}")
 
+    @staticmethod
+    def _strip_comments(text: str) -> str:
+        active_lines: list[str] = []
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("#") or stripped.startswith("//"):
+                continue
+            # Also strip trailing inline comments outside quotes conservatively
+            line_no_comment = re.sub(r"(?:#|//).*$", "", line)
+            active_lines.append(line_no_comment)
+        return "\n".join(active_lines)
+
     def validate_test_patch_not_cheating(
         self, search_text: str, replace_text: str
     ) -> None:
         """Prevent weakening tests during WRITE_TEST by blocking assertion removal or skip annotations."""
-        before_asserts = len(ASSERT_PATTERN.findall(search_text))
-        after_asserts = len(ASSERT_PATTERN.findall(replace_text))
+        clean_search = self._strip_comments(search_text)
+        clean_replace = self._strip_comments(replace_text)
+        before_asserts = len(ASSERT_PATTERN.findall(clean_search))
+        after_asserts = len(ASSERT_PATTERN.findall(clean_replace))
         if after_asserts < before_asserts:
             raise GuardViolation(
                 f"Test cheating detected: patch reduces assertion count from {before_asserts} to {after_asserts}"
             )
-        if SKIP_PATTERN.search(replace_text) and not SKIP_PATTERN.search(search_text):
+        if SKIP_PATTERN.search(clean_replace) and not SKIP_PATTERN.search(clean_search):
             raise GuardViolation(
                 "Test cheating detected: patch introduces test skip/disable annotation"
             )

@@ -22,6 +22,25 @@ class GitOps:
 
     def __init__(self, repo_root: Path):
         self.repo_root = Path(repo_root).resolve()
+        self._ensure_internal_excludes()
+
+    def _ensure_internal_excludes(self) -> None:
+        """Ensure .forge/ and harness directories are excluded from git tracking in target repos."""
+        info_exclude = self.repo_root / ".git" / "info" / "exclude"
+        if info_exclude.parent.is_dir():
+            existing = (
+                info_exclude.read_text(encoding="utf-8", errors="ignore")
+                if info_exclude.exists()
+                else ""
+            )
+            needed = [".forge/", ".superpowers/", ".worktrees/"]
+            missing = [item for item in needed if item not in existing]
+            if missing:
+                with info_exclude.open("a", encoding="utf-8") as fh:
+                    if existing and not existing.endswith("\n"):
+                        fh.write("\n")
+                    for item in missing:
+                        fh.write(f"{item}\n")
 
     def _purge_transient_caches(self) -> None:
         """Remove transient test/bytecode cache directories so they never pollute diffs or tree hashes."""
@@ -124,11 +143,11 @@ class GitOps:
         )
 
     def discard_working_changes(self) -> None:
-        """Reset tracked files to HEAD and remove untracked files/directories."""
+        """Reset tracked files to HEAD and remove untracked files/directories while preserving .forge/."""
         self._run_git(["reset", "--hard", "HEAD"])
-        self._run_git(["clean", "-fd"])
+        self._run_git(["clean", "-fd", "-e", ".forge", "-e", ".superpowers", "-e", ".worktrees"])
 
     def rollback_to_snapshot(self, commit_sha: str) -> None:
         """Atomically reset working tree and branch HEAD to commit_sha and clean untracked files."""
         self._run_git(["reset", "--hard", commit_sha])
-        self._run_git(["clean", "-fd"])
+        self._run_git(["clean", "-fd", "-e", ".forge", "-e", ".superpowers", "-e", ".worktrees"])

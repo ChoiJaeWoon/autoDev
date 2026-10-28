@@ -5,9 +5,12 @@ from agent_forge.core.state import PlanSpec
 
 
 def _read_files_context(repo_root: Path, rel_paths: list[str]) -> str:
+    resolved_root = Path(repo_root).resolve()
     sections: list[str] = []
     for rel_path in rel_paths:
-        full_path = (repo_root / rel_path).resolve()
+        full_path = (resolved_root / rel_path).resolve()
+        if not full_path.is_relative_to(resolved_root):
+            continue
         if full_path.is_file():
             content = full_path.read_text(encoding="utf-8", errors="ignore")
             sections.append(f"=== FILE: {rel_path} ===\n{content}\n")
