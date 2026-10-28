@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 def _load_dotenv_if_present() -> None:
     """Load key=value pairs from .env in cwd or project root if not already in os.environ."""
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
     for candidate in (Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"):
         if candidate.is_file():
             for raw_line in candidate.read_text(encoding="utf-8", errors="ignore").splitlines():

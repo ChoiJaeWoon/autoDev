@@ -97,7 +97,9 @@ class GitOps:
     def get_diff_stats(self, base_ref: str = "HEAD") -> DiffStats:
         """Compute changed files and line counts against base_ref, including untracked files."""
         self._purge_transient_caches()
-        numstat_out = self._run_git(["diff", "--numstat", base_ref]).stdout.strip()
+        numstat_out = self._run_git(
+            ["diff", "--numstat", "--relative", base_ref]
+        ).stdout.strip()
         changed_files: list[str] = []
         added_lines = 0
         deleted_lines = 0

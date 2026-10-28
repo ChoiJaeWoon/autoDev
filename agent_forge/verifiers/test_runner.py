@@ -58,11 +58,21 @@ class SubprocessTestVerifier:
         ]
 
     def verify(self, repo_root: Path) -> VerificationResult:
+        import os
+
         exec_cmd = self._build_exec_command(Path(repo_root))
+        env = os.environ.copy()
+        existing_py = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            f"{Path(repo_root).resolve()}{os.pathsep}{existing_py}"
+            if existing_py
+            else str(Path(repo_root).resolve())
+        )
         try:
             proc = subprocess.run(
                 exec_cmd,
                 cwd=repo_root,
+                env=env,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
