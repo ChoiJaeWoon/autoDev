@@ -71,6 +71,36 @@ def test_file_guard_blocks_test_cheating_assertion_removal(tmp_path: Path):
             replace_text="def test_add():\n    pass\n",
         )
 
+    # Commenting out an assertion must also be caught as cheating
+    with pytest.raises(GuardViolation, match="assertion"):
+        guard.validate_test_patch_not_cheating(
+            search_text="def test_add():\n    assert add(1, 2) == 3\n",
+            replace_text="def test_add():\n    # assert add(1, 2) == 3\n    pass\n",
+        )
+
+
+def test_file_guard_preserves_dotfiles_and_validates_plan_roles(tmp_path: Path):
+    plan = PlanSpec(
+        subtasks=["환경 설정"],
+        target_source_files=[".env.example"],
+        target_test_files=["tests/test_env.py"],
+    )
+    guard = FileGuard(tmp_path, ForgeConfig(), plan)
+    assert guard.validate_edit_target(".env.example", RunState.IMPLEMENT) == (
+        tmp_path / ".env.example"
+    ).resolve()
+
+    # Source file disguised in target_test_files must be rejected by validate_plan
+    bad_plan = PlanSpec(
+        subtasks=["위장"],
+        target_source_files=[],
+        target_test_files=["src/calc.py"],
+    )
+    bad_guard = FileGuard(tmp_path, ForgeConfig(), bad_plan)
+    with pytest.raises(GuardViolation, match="not a valid test file"):
+        bad_guard.validate_plan()
+
+
 
 def test_file_guard_validates_diff_stats_limits(tmp_path: Path):
     plan = PlanSpec(

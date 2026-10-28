@@ -25,3 +25,12 @@ def test_target_repositories_exist_and_parse_in_repo_map():
     jsp_map = build_repo_map(jsp_target)
     assert "BoardService" in jsp_map
     assert "boardList.jsp" in jsp_map
+
+    pom_content = (jsp_target / "pom.xml").read_text(encoding="utf-8")
+    test_java_content = (
+        jsp_target / "src" / "test" / "java" / "com" / "example" / "legacy" / "BoardServiceTest.java"
+    ).read_text(encoding="utf-8")
+    assert "junit-jupiter" in pom_content
+    assert "@Test" in test_java_content
+    assert "assertEquals" in test_java_content
+

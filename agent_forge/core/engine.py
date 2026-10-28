@@ -114,6 +114,11 @@ class ForgeEngine:
                 f"Plan requested {len(plan.target_source_files)} source files, exceeding max_files_changed={self.config.max_files_changed}",
             )
 
+        try:
+            FileGuard(resolved_root, self.config, plan).validate_plan()
+        except GuardViolation as exc:
+            return self._halt(run, HaltReason.POLICY_VIOLATION, str(exc))
+
         run.plan = plan
         run.state = RunState.WAITING_APPROVAL
         self.store.save_run(run)
@@ -278,6 +283,7 @@ class ForgeEngine:
                 threshold=self.config.consecutive_error_reflect_threshold,
             )
             if pre_loop_check == LoopAction.HALT_OSCILLATION:
+                git_ops.discard_working_changes()
                 attempt = AttemptRecord(
                     attempt_number=len(run.attempts) + 1,
                     phase=RunState.IMPLEMENT,

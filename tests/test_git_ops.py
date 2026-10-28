@@ -45,3 +45,20 @@ def test_diff_stats_includes_untracked_files_and_rollback_cleans_them(tmp_path: 
     git_ops.rollback_to_snapshot(base_sha)
     assert not (repo / "rogue.py").exists()
     assert "return a + b\n" in (repo / "app.py").read_text(encoding="utf-8")
+
+
+def test_git_ops_ignores_and_preserves_dot_forge_state_dir(tmp_path: Path):
+    repo = _init_sample_repo(tmp_path)
+    git_ops = GitOps(repo)
+    forge_db = repo / ".forge" / "state.db"
+    forge_db.parent.mkdir(parents=True)
+    forge_db.write_text("sqlite-bytes", encoding="utf-8")
+
+    # .forge/state.db must not appear as a changed file in diff_stats
+    stats = git_ops.get_diff_stats()
+    assert stats.changed_files == []
+
+    # discard_working_changes must NOT delete .forge/state.db
+    git_ops.discard_working_changes()
+    assert forge_db.exists()
+

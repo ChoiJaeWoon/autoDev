@@ -144,3 +144,94 @@ def test_engine_pauses_at_waiting_approval_and_resumes(tmp_path: Path):
 
     resumed_run = engine.resume_run(paused_run.run_id, approve=True)
     assert resumed_run.state == RunState.DONE
+
+
+def test_engine_halts_on_oscillation_and_cleans_working_tree(tmp_path: Path):
+    repo = _setup_calc_repo(tmp_path)
+    store = StateStore(tmp_path / "state.db")
+    verifier = SubprocessTestVerifier([sys.executable, "-m", "pytest", "-q"])
+
+    plan_json = (
+        '{"subtasks": ["add 수정"], '
+        '"target_source_files": ["src/calc.py"], '
+        '"target_test_files": []}'
+    )
+    # Attempt 1 -> State A (return a - b)
+    bad_impl_a = (
+        "FILE: src/calc.py\n"
+        "<<<<<<< SEARCH\n"
+        "    return a + b\n"
+        "=======\n"
+        "    return a - b\n"
+        ">>>>>>> REPLACE\n"
+    )
+    # Attempt 2 -> State B (return a * b)
+    bad_impl_b = (
+        "FILE: src/calc.py\n"
+        "<<<<<<< SEARCH\n"
+        "    return a - b\n"
+        "=======\n"
+        "    return a * b\n"
+        ">>>>>>> REPLACE\n"
+    )
+    # Attempt 3 -> oscillates back to State A (return a - b) -> OSCILLATION_DETECTED
+    bad_impl_back_to_a = (
+        "FILE: src/calc.py\n"
+        "<<<<<<< SEARCH\n"
+        "    return a * b\n"
+        "=======\n"
+        "    return a - b\n"
+        ">>>>>>> REPLACE\n"
+    )
+    llm = ScriptedLLM([plan_json, bad_impl_a, bad_impl_b, bad_impl_back_to_a])
+    engine = ForgeEngine(ForgeConfig(), store, llm, verifier)
+    run = engine.start_run("add 수정", repo, auto_approve=True)
+
+    assert run.state == RunState.HALT
+    assert run.halt_reason == HaltReason.OSCILLATION_DETECTED
+    status_out = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert status_out == ""
+
+
+def test_engine_halts_on_test_cheating_and_path_traversal_plan(tmp_path: Path):
+    repo = _setup_calc_repo(tmp_path)
+    store = StateStore(tmp_path / "state.db")
+    verifier = SubprocessTestVerifier([sys.executable, "-m", "pytest", "-q"])
+
+    # 1. Plan attempting path traversal outside repo is halted immediately
+    traversal_plan = (
+        '{"subtasks": ["해킹"], '
+        '"target_source_files": ["../../etc/passwd"], '
+        '"target_test_files": []}'
+    )
+    engine1 = ForgeEngine(ForgeConfig(), store, ScriptedLLM([traversal_plan]), verifier)
+    run1 = engine1.start_run("외부 파일 접근", repo, auto_approve=True)
+    assert run1.state == RunState.HALT
+    assert run1.halt_reason == HaltReason.POLICY_VIOLATION
+
+    # 2. Attempt to delete assertion during WRITE_TEST is halted
+    valid_plan = (
+        '{"subtasks": ["치팅 시도"], '
+        '"target_source_files": ["src/calc.py"], '
+        '"target_test_files": ["tests/test_calc.py"]}'
+    )
+    cheating_test_patch = (
+        "FILE: tests/test_calc.py\n"
+        "<<<<<<< SEARCH\n"
+        "def test_add():\n"
+        "    assert add(2, 3) == 5\n"
+        "=======\n"
+        "def test_add():\n"
+        "    # assert add(2, 3) == 5\n"
+        "    pass\n"
+        ">>>>>>> REPLACE\n"
+    )
+    engine2 = ForgeEngine(
+        ForgeConfig(), store, ScriptedLLM([valid_plan, cheating_test_patch]), verifier
+    )
+    run2 = engine2.start_run("테스트 치팅", repo, auto_approve=True)
+    assert run2.state == RunState.HALT
+    assert run2.halt_reason == HaltReason.POLICY_VIOLATION
+
