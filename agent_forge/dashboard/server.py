@@ -252,11 +252,24 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
 
         img_path = Path(file_path_str).resolve()
+        ws_root = self.server.workspace_root.resolve()
+        default_art_root = Path(".forge/artifacts").resolve()
+        if not (
+            img_path.is_relative_to(ws_root)
+            or img_path.is_relative_to(default_art_root)
+        ):
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Artifact path outside workspace"})
+            return
+
         if not img_path.is_file() or img_path.suffix.lower() != ".png":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Artifact image file not found"})
             return
 
         data = img_path.read_bytes()
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Invalid PNG signature"})
+            return
+
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", str(len(data)))

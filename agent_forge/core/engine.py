@@ -311,6 +311,8 @@ class ForgeEngine:
             run.state = RunState.VERIFY
             self.store.save_run(run)
 
+            if hasattr(self.verifier, "set_run_context"):
+                self.verifier.set_run_context(run.run_id, len(run.attempts) + 1)
             verify_res = self.verifier.verify(repo_root)
             snap_sha = git_ops.create_snapshot(
                 f"chore(forge): attempt {len(run.attempts) + 1} ({'PASS' if verify_res.passed else 'FAIL'})"

@@ -129,10 +129,18 @@ def resume_command(
     config = ForgeConfig()
     store = StateStore(db_path)
     llm = OpenAICompatibleClient(config)
-    verifier = SubprocessTestVerifier(
-        shlex.split(test_cmd), timeout_seconds=config.test_timeout_seconds
-    )
-    engine = ForgeEngine(config, store, llm, verifier)
+    existing = store.get_run(run_id)
+    if (
+        existing is not None
+        and (Path(existing.repo_root) / "pom.xml").is_file()
+        and not (Path(existing.repo_root) / "pyproject.toml").is_file()
+    ):
+        verifier: object = PlaywrightVisualVerifier()
+    else:
+        verifier = SubprocessTestVerifier(
+            shlex.split(test_cmd), timeout_seconds=config.test_timeout_seconds
+        )
+    engine = ForgeEngine(config, store, llm, verifier)  # type: ignore[arg-type]
     record = engine.resume_run(run_id, approve=approve)
     console.print(
         f"[green]Run '{record.run_id}' resumed -> {record.state.value} ({record.halt_reason.value})[/green]"

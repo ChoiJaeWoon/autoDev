@@ -182,6 +182,56 @@ def test_dashboard_api_list_and_get_run_with_git_diffs(sample_dashboard_env):
     assert exc_info.value.code == 404
 
 
+def test_dashboard_artifact_endpoint_blocks_outside_workspace_and_invalid_png(
+    sample_dashboard_env, tmp_path: Path
+):
+    base_url, db_path, repo = sample_dashboard_env
+    store = StateStore(db_path)
+
+    bad_png = tmp_path / "artifacts" / "not_really_png.png"
+    bad_png.parent.mkdir(exist_ok=True)
+    bad_png.write_bytes(b"NOT_A_PNG_HEADER_AT_ALL")
+
+    outside_file = Path("/tmp/outside_forge_test_artifact.png")
+    outside_file.write_bytes(b"\x89PNG\r\n\x1a\nvalid-header-but-outside")
+
+    try:
+        run_sec = RunRecord(
+            run_id="run-sec",
+            task_description="보안 검증",
+            repo_root=str(repo),
+            branch_name="forge/run-sec",
+            state=RunState.DONE,
+            attempts=[
+                AttemptRecord(
+                    attempt_number=1,
+                    phase=RunState.VERIFY,
+                    tree_hash="12345678",
+                    patch_summary="test",
+                    test_passed=True,
+                    exit_code=0,
+                    artifacts={
+                        "baseline_screenshot": str(outside_file),
+                        "after_screenshot": str(bad_png),
+                    },
+                )
+            ],
+        )
+        store.save_run(run_sec)
+
+        # Outside workspace must be rejected with 404
+        with pytest.raises(urllib.error.HTTPError) as exc_out:
+            urllib.request.urlopen(f"{base_url}/api/runs/run-sec/artifacts/1/baseline")
+        assert exc_out.value.code == 404
+
+        # File without PNG magic header must be rejected with 404
+        with pytest.raises(urllib.error.HTTPError) as exc_magic:
+            urllib.request.urlopen(f"{base_url}/api/runs/run-sec/artifacts/1/after")
+        assert exc_magic.value.code == 404
+    finally:
+        outside_file.unlink(missing_ok=True)
+
+
 def test_dashboard_post_dispatch_run_and_resume_approval(tmp_path: Path):
     import time
 

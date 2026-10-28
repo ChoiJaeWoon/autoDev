@@ -77,3 +77,33 @@ def test_playwright_visual_verifier_captures_baseline_after_and_diff_and_checks_
     assert res_overflow.passed is False
     assert "overflow" in res_overflow.raw_output.lower()
     assert res_overflow.artifacts["dom_status"] == "FAIL"
+
+
+def test_legacy_web_verifier_syncs_run_context_and_handles_java_timeout(
+    monkeypatch, tmp_path: Path
+):
+    import subprocess
+    import agent_forge.verifiers.legacy_web as lw
+
+    src_target = Path(__file__).resolve().parent.parent / "targets" / "legacy-jsp-app"
+    repo = tmp_path / "legacy-jsp-app"
+    shutil.copytree(src_target, repo)
+
+    # 1. Verify set_run_context synchronizes run_id and attempt_number (e.g. on resume or after patch failure)
+    artifacts_root = tmp_path / "artifacts"
+    verifier = PlaywrightVisualVerifier(artifacts_dir=artifacts_root)
+    verifier.set_run_context("run-resumed-99", attempt_number=3)
+    res = verifier.verify(repo)
+    assert res.passed is True
+    assert "run-resumed-99/attempt-3-after.png" in res.artifacts["after_screenshot"]
+
+    # 2. Verify subprocess.TimeoutExpired in run_java_tests returns structured TIMEOUT result instead of raising
+    def fake_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="java", timeout=1)
+
+    monkeypatch.setattr(lw.subprocess, "run", fake_timeout)
+    timeout_res = run_java_tests(repo, timeout_seconds=1)
+    assert timeout_res.passed is False
+    assert timeout_res.exit_code == 124
+    assert timeout_res.error_fingerprint == "TIMEOUT"
+

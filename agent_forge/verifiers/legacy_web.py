@@ -142,14 +142,23 @@ def run_java_tests(repo_root: Path, timeout_seconds: int = 30) -> VerificationRe
         )
 
     if shutil.which("mvn") and (root / "pom.xml").is_file():
-        res = subprocess.run(
-            ["mvn", "test", "-q"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
+        try:
+            res = subprocess.run(
+                ["mvn", "test", "-q"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return VerificationResult(
+                passed=False,
+                exit_code=124,
+                summary=f"Maven test timed out after {timeout_seconds}s",
+                raw_output=str(exc),
+                error_fingerprint="TIMEOUT",
+            )
         combined = f"{res.stdout}\n{res.stderr}".strip()
         passed = res.returncode == 0
         return VerificationResult(
@@ -190,14 +199,32 @@ def run_java_tests(repo_root: Path, timeout_seconds: int = 30) -> VerificationRe
                 rel = p.relative_to(test_java_dir).with_suffix("")
                 test_class_names.append(".".join(rel.parts))
 
-        compile_res = subprocess.run(
-            ["javac", "-encoding", "UTF-8", "-d", str(classes_dir), *java_files],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
+        try:
+            compile_res = subprocess.run(
+                ["javac", "-encoding", "UTF-8", "-d", str(classes_dir), *java_files],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return VerificationResult(
+                passed=False,
+                exit_code=124,
+                summary=f"Java compilation timed out after {timeout_seconds}s",
+                raw_output=str(exc),
+                error_fingerprint="TIMEOUT",
+            )
+        except FileNotFoundError as exc:
+            return VerificationResult(
+                passed=False,
+                exit_code=127,
+                summary="javac binary not found",
+                raw_output=str(exc),
+                error_fingerprint="JAVAC_MISSING",
+            )
+
         if compile_res.returncode != 0:
             err_out = f"{compile_res.stdout}\n{compile_res.stderr}".strip()
             return VerificationResult(
@@ -216,14 +243,31 @@ def run_java_tests(repo_root: Path, timeout_seconds: int = 30) -> VerificationRe
                 raw_output="",
             )
 
-        run_res = subprocess.run(
-            ["java", "-cp", str(classes_dir), "ForgeJUnitRunner", *test_class_names],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
+        try:
+            run_res = subprocess.run(
+                ["java", "-cp", str(classes_dir), "ForgeJUnitRunner", *test_class_names],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return VerificationResult(
+                passed=False,
+                exit_code=124,
+                summary=f"Java tests timed out after {timeout_seconds}s",
+                raw_output=str(exc),
+                error_fingerprint="TIMEOUT",
+            )
+        except FileNotFoundError as exc:
+            return VerificationResult(
+                passed=False,
+                exit_code=127,
+                summary="java binary not found",
+                raw_output=str(exc),
+                error_fingerprint="JAVA_MISSING",
+            )
         combined = f"{run_res.stdout}\n{run_res.stderr}".strip()
         passed = run_res.returncode == 0
         return VerificationResult(
@@ -384,6 +428,11 @@ class PlaywrightVisualVerifier:
         self.viewport_height = viewport_height
         self._active_run_id: str = "default"
         self._attempt_counter: int = 0
+
+    def set_run_context(self, run_id: str, attempt_number: int) -> None:
+        """Synchronize active run ID and upcoming attempt number before verification."""
+        self._active_run_id = run_id
+        self._attempt_counter = max(0, attempt_number - 1)
 
     def _find_target_jsp_or_html(self, repo_root: Path) -> Path | None:
         root = Path(repo_root).resolve()
